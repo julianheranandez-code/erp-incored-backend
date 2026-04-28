@@ -34,7 +34,7 @@ ON CONFLICT (email) DO NOTHING;
 -- ─────────────────────────────────────────────────────────────
 -- SAMPLE CLIENTS
 -- ─────────────────────────────────────────────────────────────
-INSERT INTO clients (name, type, rfc, country, industry, primary_contact_name, primary_contact_email, payment_terms)
+INSERT INTO clients (business_name, type, rfc, country, industry, primary_contact_name, primary_contact_email, payment_terms)
 VALUES
   ('CFE Distribución',         'cliente',   'CFE370814QI0', 'Mexico', 'Energy',             'Licitaciones CFE',        'licitaciones@cfe.mx',         '30_dias'),
   ('Telmex SA de CV',          'cliente',   'TEL911231KI4', 'Mexico', 'Telecommunications', 'Contratos Telmex',        'contratos@telmex.com',        '30_dias'),
