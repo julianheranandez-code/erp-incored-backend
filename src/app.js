@@ -131,7 +131,7 @@ app.use('/api/auth',         authRoutes);
 app.use('/api/users',        usersRoutes);
 app.use('/api/projects',     projectsRoutes);
 app.use('/api/tasks',        tasksRoutes);
-app.use('/api',              crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
+app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/inventory',    inventoryRoutes);
 app.use('/api/employees',    employeesRoutes);
