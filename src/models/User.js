@@ -29,7 +29,7 @@ class User {
       `SELECT u.id, u.email, CONCAT(u.first_name, ' ', u.last_name) AS name, u.phone, u.company_id, u.role, u.status,
               u.must_change_password, u.last_login_at, u.two_fa_enabled, u.avatar_url,
               u.created_at, u.updated_at,
-              c.name AS company_name, c.short_code AS company_code
+              c.name AS company_name, c.id AS company_code
        FROM users u
        LEFT JOIN companies c ON c.id = u.company_id
        WHERE u.id = $1`,

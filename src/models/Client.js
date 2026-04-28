@@ -14,7 +14,7 @@ class Client {
       params.push(`%${search}%`);
       idx++;
     }
-    conditions.push(`is_active = true`);
+    // is_active column does not exist
 
     const where = `WHERE ${conditions.join(' AND ')}`;
     const offset = (page - 1) * limit;
