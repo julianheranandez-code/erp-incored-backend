@@ -9,7 +9,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
  * Middleware: Verify JWT Token
  * Extracts token from Authorization header and verifies it
  */
-const authenticateToken = (req, res, next) => {
+const verifyToken = (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
     
@@ -91,6 +91,6 @@ const authorizeRole = (allowedRoles) => {
 };
 
 module.exports = {
-  authenticateToken,
+  verifyToken,
   authorizeRole,
 };
