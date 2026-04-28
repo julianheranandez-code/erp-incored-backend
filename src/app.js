@@ -66,19 +66,14 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl, Postman)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    logger.warn(`CORS blocked origin: ${origin}`);
-    callback(new Error(`Origin ${origin} not allowed by CORS`));
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID'],
-  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Limit'],
-  credentials: true,
-  maxAge: 86400,
+  origin: [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://incored-julian-erp.lovable.app'
+  ],
+  credentials: true
 }));
+
 
 // ─── Compression ──────────────────────────────────────────────────────────────
 app.use(compression());
