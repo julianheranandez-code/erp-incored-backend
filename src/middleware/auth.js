@@ -1,105 +1,96 @@
 'use strict';
 
-const { verifyAccessToken, isTokenBlacklisted } = require('../config/auth');
-const { query } = require('../config/database');
+const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
 /**
- * Verify JWT Access Token middleware
- * Attaches req.user on success
+ * Middleware: Verify JWT Token
+ * Extracts token from Authorization header and verifies it
  */
-const verifyToken = async (req, res, next) => {
+const authenticateToken = (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const authHeader = req.headers['authorization'];
+    
+    if (!authHeader) {
       return res.status(401).json({
         success: false,
         error: 'unauthorized',
-        message: 'Token de acceso requerido.',
+        message: 'Token de acceso requerido.'
       });
     }
 
-    const token = authHeader.split(' ')[1];
+    // Extract token from "Bearer <token>"
+    const token = authHeader.startsWith('Bearer ') 
+      ? authHeader.slice(7) 
+      : authHeader;
 
-    // Verify signature and expiry
-    let decoded;
-    try {
-      decoded = verifyAccessToken(token);
-    } catch (err) {
-      const message = err.name === 'TokenExpiredError'
-        ? 'Token expirado. Por favor, renueva tu sesión.'
-        : 'Token inválido.';
+    if (!token) {
       return res.status(401).json({
         success: false,
         error: 'unauthorized',
-        message,
+        message: 'Token de acceso inválido.'
       });
     }
 
-    // Check blacklist
-    const jti = decoded.jti || token.slice(-20);
-    const blacklisted = await isTokenBlacklisted(jti);
-    if (blacklisted) {
+    // Verify JWT
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    logger.error('Token verification failed:', err.message);
+    
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'token_expired',
+        message: 'Token expirado.'
+      });
+    }
+
+    if (err.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        error: 'invalid_token',
+        message: 'Token inválido.'
+      });
+    }
+
+    return res.status(401).json({
+      success: false,
+      error: 'unauthorized',
+      message: 'Error de autenticación.'
+    });
+  }
+};
+
+/**
+ * Middleware: Verify user role
+ */
+const authorizeRole = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.user) {
       return res.status(401).json({
         success: false,
         error: 'unauthorized',
-        message: 'Token revocado. Por favor, vuelve a iniciar sesión.',
+        message: 'Usuario no autenticado.'
       });
     }
 
-    // Check user still exists and is active
-    const userResult = await query(
-      `SELECT id, email, name, role, company_id, status, two_fa_enabled
-       FROM users WHERE id = $1`,
-      [decoded.id]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(401).json({
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
         success: false,
-        error: 'unauthorized',
-        message: 'Usuario no encontrado.',
+        error: 'forbidden',
+        message: 'Permisos insuficientes.'
       });
     }
-
-    const user = userResult.rows[0];
-
-    if (user.status !== 'active') {
-      return res.status(401).json({
-        success: false,
-        error: 'unauthorized',
-        message: 'Tu cuenta está suspendida o inactiva. Contacta al administrador.',
-      });
-    }
-
-    // Attach to request
-    req.user = {
-      id: user.id,
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      company_id: user.company_id,
-      status: user.status,
-    };
 
     next();
-  } catch (error) {
-    logger.error('Auth middleware error:', error);
-    next(error);
-  }
+  };
 };
 
-/**
- * Optional token verification (for public-ish routes)
- * Does not fail if no token, but attaches user if present
- */
-const optionalToken = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return next();
-  }
-  return verifyToken(req, res, next);
+module.exports = {
+  authenticateToken,
+  authorizeRole,
 };
-
-module.exports = { verifyToken, optionalToken };
