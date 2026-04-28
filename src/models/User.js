@@ -13,7 +13,7 @@ class User {
   static async findByEmail(email) {
     const result = await query(
       `SELECT id, email, password_hash, CONCAT(first_name, ' ', last_name) AS name, phone, company_id, role, status,
-              must_change_password, last_login, login_attempts, locked_until,
+              must_change_password, last_login_at, login_attempts, locked_until,
               two_fa_enabled, two_fa_secret, created_at
        FROM users WHERE email = $1`,
       [email.toLowerCase()]
@@ -27,7 +27,7 @@ class User {
   static async findById(id) {
     const result = await query(
       `SELECT u.id, u.email, CONCAT(u.first_name, ' ', u.last_name) AS name, u.phone, u.company_id, u.role, u.status,
-              u.must_change_password, u.last_login, u.two_fa_enabled, u.avatar_url,
+              u.must_change_password, u.last_login_at, u.two_fa_enabled, u.avatar_url,
               u.created_at, u.updated_at,
               c.name AS company_name, c.short_code AS company_code
        FROM users u
@@ -77,7 +77,7 @@ class User {
     const [rows, countResult] = await Promise.all([
       query(
         `SELECT u.id, u.email, CONCAT(u.first_name, ' ', u.last_name) AS name, u.phone, u.role, u.status, u.company_id,
-                u.last_login, u.two_fa_enabled, u.created_at, u.updated_at,
+                u.last_login_at, u.two_fa_enabled, u.created_at, u.updated_at,
                 c.name AS company_name
          FROM users u
          LEFT JOIN companies c ON c.id = u.company_id
@@ -183,7 +183,7 @@ class User {
    */
   static async recordLogin(id) {
     await query(
-      `UPDATE users SET last_login = NOW(), login_attempts = 0, locked_until = NULL
+      `UPDATE users SET last_login_at = NOW(), last_login_ip = CAST(INET_CLIENT_ADDR() AS TEXT), login_attempts = 0, locked_until = NULL
        WHERE id = $1`,
       [id]
     );
