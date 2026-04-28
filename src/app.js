@@ -9,6 +9,9 @@ const cors = require('cors');
 const morgan = require('morgan');
 const compression = require('compression');
 
+const swaggerUi = require('swagger-ui-express');
+const swaggerSpec = require('./config/swagger');
+
 const logger = require('./utils/logger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { generalLimiter } = require('./middleware/rateLimit');
@@ -26,6 +29,7 @@ const reportsRoutes     = require('./routes/reports');
 const filesRoutes       = require('./routes/files');
 
 const app = express();
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // ─── Sentry (error monitoring) ────────────────────────────────────────────────
 if (process.env.SENTRY_DSN) {
