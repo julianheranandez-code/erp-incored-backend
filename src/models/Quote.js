@@ -24,7 +24,7 @@ class Quote {
       query(
         `SELECT q.id, q.folio, q.status, q.issue_date, q.validity_days,
                 q.subtotal, q.total, q.currency, q.sent_at, q.accepted_at, q.created_at,
-                c.name AS client_name, co.name AS company_name, u.name AS creator_name
+                c.name AS client_name, co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS creator_name
          FROM quotes q
          LEFT JOIN clients c ON c.id = q.client_id
          LEFT JOIN companies co ON co.id = q.company_id
@@ -43,7 +43,7 @@ class Quote {
       query(
         `SELECT q.*, c.name AS client_name, c.rfc AS client_rfc,
                 c.primary_contact_name AS client_contact, c.primary_contact_email AS client_email,
-                co.name AS company_name, u.name AS creator_name
+                co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS creator_name
          FROM quotes q
          LEFT JOIN clients c ON c.id = q.client_id
          LEFT JOIN companies co ON co.id = q.company_id
