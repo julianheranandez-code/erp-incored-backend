@@ -14,7 +14,7 @@ class Client {
       params.push(`%${search}%`);
       idx++;
     }
-    // is_active column does not exist
+    conditions.push(`status != 'deleted'`);
 
     const where = `WHERE ${conditions.join(' AND ')}`;
     const offset = (page - 1) * limit;
