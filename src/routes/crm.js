@@ -159,7 +159,7 @@ router.get('/leads', async (req, res, next) => {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const offset = (page - 1) * limit;
     const [rows, countResult] = await Promise.all([
-      query(`SELECT l.*, c.name AS client_name, u.name AS assigned_to_name
+      query(`SELECT l.*, c.name AS client_name, CONCAT(u.first_name, ' ', u.last_name) AS assigned_to_name
              FROM leads l LEFT JOIN clients c ON c.id = l.client_id LEFT JOIN users u ON u.id = l.assigned_to
              ${where} ORDER BY l.created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`, [...params, limit, offset]),
       query(`SELECT COUNT(*) AS total FROM leads l ${where}`, params),
