@@ -12,7 +12,7 @@ class User {
    */
   static async findByEmail(email) {
     const result = await query(
-      `SELECT id, email, password_hash, name, phone, company_id, role, status,
+      `SELECT id, email, password_hash, CONCAT(first_name, ' ', last_name) AS name, phone, company_id, role, status,
               must_change_password, last_login, login_attempts, locked_until,
               two_fa_enabled, two_fa_secret, created_at
        FROM users WHERE email = $1`,
@@ -26,7 +26,7 @@ class User {
    */
   static async findById(id) {
     const result = await query(
-      `SELECT u.id, u.email, u.name, u.phone, u.company_id, u.role, u.status,
+      `SELECT u.id, u.email, CONCAT(u.first_name, ' ', u.last_name) AS name, u.phone, u.company_id, u.role, u.status,
               u.must_change_password, u.last_login, u.two_fa_enabled, u.avatar_url,
               u.created_at, u.updated_at,
               c.name AS company_name, c.short_code AS company_code
@@ -66,7 +66,7 @@ class User {
     }
 
     if (search) {
-      conditions.push(`(u.name ILIKE $${idx} OR u.email ILIKE $${idx})`);
+      conditions.push(`(CONCAT(u.first_name, ' ', u.last_name) ILIKE $${idx} OR u.email ILIKE $${idx})`);
       params.push(`%${search}%`);
       idx++;
     }
@@ -76,7 +76,7 @@ class User {
 
     const [rows, countResult] = await Promise.all([
       query(
-        `SELECT u.id, u.email, u.name, u.phone, u.role, u.status, u.company_id,
+        `SELECT u.id, u.email, CONCAT(u.first_name, ' ', u.last_name) AS name, u.phone, u.role, u.status, u.company_id,
                 u.last_login, u.two_fa_enabled, u.created_at, u.updated_at,
                 c.name AS company_name
          FROM users u
@@ -103,11 +103,16 @@ class User {
    */
   static async create({ email, password, name, phone, company_id, role, must_change_password = false }) {
     const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
+    
+    // Split name into first_name and last_name
+    const [first_name, ...lastNameParts] = (name || '').split(' ');
+    const last_name = lastNameParts.join(' ') || '';
+    
     const result = await query(
-      `INSERT INTO users (email, password_hash, name, phone, company_id, role, must_change_password)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, email, name, role, company_id, status, created_at`,
-      [email.toLowerCase(), password_hash, name, phone || null, company_id, role, must_change_password]
+      `INSERT INTO users (email, password_hash, first_name, last_name, phone, company_id, role, must_change_password)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, email, CONCAT(first_name, ' ', last_name) AS name, role, company_id, status, created_at`,
+      [email.toLowerCase(), password_hash, first_name, last_name, phone || null, company_id, role, must_change_password]
     );
     return result.rows[0];
   }
@@ -116,10 +121,17 @@ class User {
    * Update user
    */
   static async update(id, updates) {
-    const allowed = ['name', 'phone', 'company_id', 'role', 'status', 'avatar_url'];
+    const allowed = ['first_name', 'last_name', 'phone', 'company_id', 'role', 'status', 'avatar_url', 'job_title', 'department'];
     const fields = [];
     const params = [];
     let idx = 1;
+
+    // Handle 'name' field by splitting into first_name and last_name
+    if ('name' in updates) {
+      const [first_name, ...lastNameParts] = (updates.name || '').split(' ');
+      updates.first_name = first_name;
+      updates.last_name = lastNameParts.join(' ') || '';
+    }
 
     for (const key of allowed) {
       if (key in updates) {
@@ -134,7 +146,7 @@ class User {
     const result = await query(
       `UPDATE users SET ${fields.join(', ')}, updated_at = NOW()
        WHERE id = $${idx}
-       RETURNING id, email, name, role, company_id, status, updated_at`,
+       RETURNING id, email, CONCAT(first_name, ' ', last_name) AS name, role, company_id, status, updated_at`,
       params
     );
     return result.rows[0] || null;
