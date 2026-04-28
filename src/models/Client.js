@@ -8,20 +8,21 @@ class Client {
     const params = [];
     let idx = 1;
 
+    conditions.push(`is_active = true`);
+
     if (type) { conditions.push(`type = $${idx++}`); params.push(type); }
     if (search) {
       conditions.push(`(name ILIKE $${idx} OR rfc ILIKE $${idx} OR primary_contact_email ILIKE $${idx})`);
       params.push(`%${search}%`);
       idx++;
     }
-    conditions.push(`status != 'deleted'`);
 
     const where = `WHERE ${conditions.join(' AND ')}`;
     const offset = (page - 1) * limit;
 
     const [rows, countResult] = await Promise.all([
       query(
-        `SELECT * FROM clients ${where} ORDER BY business_name ASC LIMIT $${idx} OFFSET $${idx + 1}`,
+        `SELECT * FROM clients ${where} ORDER BY name ASC LIMIT $${idx} OFFSET $${idx + 1}`,
         [...params, limit, offset]
       ),
       query(`SELECT COUNT(*) AS total FROM clients ${where}`, params),
@@ -36,44 +37,47 @@ class Client {
 
   static async create(data) {
     const {
-      name, type, rfc, country, state, city, address, industry, website,
-      primary_contact_name, primary_contact_email, primary_contact_phone,
-      credit_limit, payment_terms, credit_rating, notes,
+      company_id, name, type = 'cliente', rfc, country, state, city, address,
+      industry, website, primary_contact_name, primary_contact_email,
+      primary_contact_phone, credit_limit, payment_terms, credit_rating, notes
     } = data;
+
     const result = await query(
       `INSERT INTO clients
-         (name, type, rfc, country, state, city, address, industry, website,
-          primary_contact_name, primary_contact_email, primary_contact_phone,
-          credit_limit, payment_terms, credit_rating, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        (company_id, name, type, rfc, country, state, city, address, industry, website,
+         primary_contact_name, primary_contact_email, primary_contact_phone,
+         credit_limit, payment_terms, credit_rating, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
        RETURNING *`,
-      [name, type || 'cliente', rfc || null, country || null, state || null, city || null,
-       address || null, industry || null, website || null,
-       primary_contact_name || null, primary_contact_email || null, primary_contact_phone || null,
-       credit_limit || null, payment_terms || null, credit_rating || null, notes || null]
+      [company_id || null, name, type, rfc || null, country || null, state || null,
+       city || null, address || null, industry || null, website || null,
+       primary_contact_name || null, primary_contact_email || null,
+       primary_contact_phone || null, credit_limit || null,
+       payment_terms || null, credit_rating || null, notes || null]
     );
     return result.rows[0];
   }
 
   static async update(id, data) {
-    const allowed = [
-      'name', 'type', 'rfc', 'country', 'state', 'city', 'address', 'industry', 'website',
-      'primary_contact_name', 'primary_contact_email', 'primary_contact_phone',
-      'credit_limit', 'payment_terms', 'credit_rating', 'notes',
-    ];
-    const fields = [];
-    const params = [];
-    let idx = 1;
-    for (const key of allowed) {
-      if (key in data) { fields.push(`${key} = $${idx++}`); params.push(data[key]); }
-    }
-    if (!fields.length) return null;
-    params.push(id);
+    const existing = await this.findById(id);
+    if (!existing) return null;
+
+    const updated = { ...existing, ...data };
     const result = await query(
-      `UPDATE clients SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${idx} RETURNING *`,
-      params
+      `UPDATE clients SET
+        name = $1, type = $2, rfc = $3, country = $4, state = $5, city = $6,
+        address = $7, industry = $8, website = $9, primary_contact_name = $10,
+        primary_contact_email = $11, primary_contact_phone = $12,
+        credit_limit = $13, payment_terms = $14, credit_rating = $15,
+        notes = $16, is_active = $17, updated_at = NOW()
+       WHERE id = $18 RETURNING *`,
+      [updated.name, updated.type, updated.rfc, updated.country, updated.state,
+       updated.city, updated.address, updated.industry, updated.website,
+       updated.primary_contact_name, updated.primary_contact_email,
+       updated.primary_contact_phone, updated.credit_limit, updated.payment_terms,
+       updated.credit_rating, updated.notes, updated.is_active !== false, id]
     );
-    return result.rows[0] || null;
+    return result.rows[0];
   }
 }
 
