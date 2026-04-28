@@ -1,7 +1,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { query } = require('./database');
 const logger = require('../utils/logger');
 
@@ -36,19 +36,20 @@ const generateAccessToken = (payload) => {
 };
 
 /**
- * Generate Refresh Token (UUID-based, stored in DB)
+ * Generate Refresh Token (hash-based, stored in DB)
  * @param {number} userId
  * @returns {Promise<string>} Refresh token
  */
 const generateRefreshToken = async (userId) => {
-  const token = uuidv4();
+  const token = crypto.randomBytes(32).toString('hex');
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
 
   await query(
-    `INSERT INTO refresh_tokens (user_id, token, expires_at)
+    `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
      VALUES ($1, $2, $3)`,
-    [userId, token, expiresAt]
+    [userId, tokenHash, expiresAt]
   );
 
   return token;
@@ -60,12 +61,15 @@ const generateRefreshToken = async (userId) => {
  * @returns {Promise<object>} User data from token
  */
 const validateRefreshToken = async (token) => {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  
   const result = await query(
-    `SELECT rt.*, u.id as user_id, u.email, u.role, u.company_id, u.name, u.status
+    `SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at,
+            u.id, u.email, u.role, u.company_id, CONCAT(u.first_name, ' ', u.last_name) AS name, u.status
      FROM refresh_tokens rt
      JOIN users u ON u.id = rt.user_id
-     WHERE rt.token = $1 AND rt.revoked = false AND rt.expires_at > NOW()`,
-    [token]
+     WHERE rt.token_hash = $1 AND rt.revoked_at IS NULL AND rt.expires_at > NOW()`,
+    [tokenHash]
   );
 
   if (result.rows.length === 0) {
@@ -88,9 +92,10 @@ const validateRefreshToken = async (token) => {
  * @param {string} token
  */
 const revokeRefreshToken = async (token) => {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   await query(
-    `UPDATE refresh_tokens SET revoked = true, revoked_at = NOW() WHERE token = $1`,
-    [token]
+    `UPDATE refresh_tokens SET revoked_at = NOW() WHERE token_hash = $1`,
+    [tokenHash]
   );
 };
 
@@ -98,62 +103,26 @@ const revokeRefreshToken = async (token) => {
  * Revoke all refresh tokens for a user (global logout)
  * @param {number} userId
  */
-const revokeAllUserTokens = async (userId) => {
+const revokeAllRefreshTokens = async (userId) => {
   await query(
-    `UPDATE refresh_tokens SET revoked = true, revoked_at = NOW()
-     WHERE user_id = $1 AND revoked = false`,
+    `UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`,
     [userId]
   );
-  logger.info(`All tokens revoked for user ${userId}`);
 };
 
 /**
- * Add JWT to blacklist (for logout before expiry)
- * @param {string} token - Raw JWT
- * @param {object} decoded - Decoded JWT payload
- */
-const blacklistToken = async (token, decoded) => {
-  const expiresAt = new Date(decoded.exp * 1000);
-  await query(
-    `INSERT INTO token_blacklist (token_jti, user_id, expires_at)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (token_jti) DO NOTHING`,
-    [decoded.jti || token.slice(-20), decoded.id, expiresAt]
-  );
-};
-
-/**
- * Check if a JWT is blacklisted
- * @param {string} jti - JWT ID or token slice
- * @returns {Promise<boolean>}
- */
-const isTokenBlacklisted = async (jti) => {
-  const result = await query(
-    `SELECT id FROM token_blacklist WHERE token_jti = $1 AND expires_at > NOW()`,
-    [jti]
-  );
-  return result.rows.length > 0;
-};
-
-/**
- * Verify JWT token fully
+ * Verify JWT Token
  * @param {string} token
- * @returns {object} Decoded payload
+ * @param {string} secret
+ * @returns {object} Decoded token
  */
-const verifyAccessToken = (token) => {
-  return jwt.verify(token, JWT_SECRET, {
-    issuer: 'IncorERP',
-    audience: 'erp.incored.com.mx',
-  });
-};
-
-/**
- * Clean expired tokens from DB (run periodically)
- */
-const cleanExpiredTokens = async () => {
-  const r1 = await query(`DELETE FROM refresh_tokens WHERE expires_at < NOW()`);
-  const r2 = await query(`DELETE FROM token_blacklist WHERE expires_at < NOW()`);
-  logger.info(`Cleaned ${r1.rowCount} refresh tokens and ${r2.rowCount} blacklisted tokens`);
+const verifyToken = (token, secret = JWT_SECRET) => {
+  try {
+    return jwt.verify(token, secret);
+  } catch (err) {
+    logger.error('Token verification failed:', err.message);
+    return null;
+  }
 };
 
 module.exports = {
@@ -161,9 +130,6 @@ module.exports = {
   generateRefreshToken,
   validateRefreshToken,
   revokeRefreshToken,
-  revokeAllUserTokens,
-  blacklistToken,
-  isTokenBlacklisted,
-  verifyAccessToken,
-  cleanExpiredTokens,
+  revokeAllRefreshTokens,
+  verifyToken,
 };
