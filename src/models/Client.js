@@ -21,7 +21,7 @@ class Client {
 
     const [rows, countResult] = await Promise.all([
       query(
-        `SELECT * FROM clients ${where} ORDER BY name ASC LIMIT $${idx} OFFSET $${idx + 1}`,
+        `SELECT * FROM clients ${where} ORDER BY business_name ASC LIMIT $${idx} OFFSET $${idx + 1}`,
         [...params, limit, offset]
       ),
       query(`SELECT COUNT(*) AS total FROM clients ${where}`, params),
