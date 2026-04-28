@@ -183,7 +183,7 @@ class User {
    */
   static async recordLogin(id) {
     await query(
-      `UPDATE users SET last_login_at = NOW(), last_login_ip = CAST(INET_CLIENT_ADDR() AS TEXT), login_attempts = 0, locked_until = NULL
+      `UPDATE users SET last_login_at = NOW(), login_attempts = 0, locked_until = NULL
        WHERE id = $1`,
       [id]
     );
