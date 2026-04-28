@@ -12,6 +12,17 @@ const { getPagination, buildPaginatedResponse } = require('../utils/helpers');
 router.use(verifyToken, auditLog);
 
 // GET /api/tasks
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: GET /
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -31,6 +42,17 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/tasks/:id
+/**
+ * @swagger
+ * /:id:
+ *   get:
+ *     summary: GET /:id
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const task = await Task.findById(parseInt(req.params.id));
@@ -40,6 +62,17 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/tasks
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: POST /
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/', validate(schemas.createTask), async (req, res, next) => {
   try {
     const task = await Task.create(req.body, req.user.id);
@@ -48,6 +81,17 @@ router.post('/', validate(schemas.createTask), async (req, res, next) => {
 });
 
 // PUT /api/tasks/:id
+/**
+ * @swagger
+ * /:id:
+ *   put:
+ *     summary: PUT /:id
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id', validate(schemas.updateTask), async (req, res, next) => {
   try {
     const task = await Task.findById(parseInt(req.params.id));
@@ -69,6 +113,17 @@ router.put('/:id', validate(schemas.updateTask), async (req, res, next) => {
 });
 
 // DELETE /api/tasks/:id
+/**
+ * @swagger
+ * /:id:
+ *   delete:
+ *     summary: DELETE /:id
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.delete('/:id', async (req, res, next) => {
   try {
     const updated = await Task.softDelete(parseInt(req.params.id));
@@ -78,6 +133,17 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 // PUT /api/tasks/:id/status
+/**
+ * @swagger
+ * /:id/status:
+ *   put:
+ *     summary: PUT /:id/status
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id/status', async (req, res, next) => {
   try {
     const { status } = req.body;
@@ -92,6 +158,17 @@ router.put('/:id/status', async (req, res, next) => {
 });
 
 // PUT /api/tasks/:id/assignee
+/**
+ * @swagger
+ * /:id/assignee:
+ *   put:
+ *     summary: PUT /:id/assignee
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id/assignee', async (req, res, next) => {
   try {
     const { user_id } = req.body;
@@ -103,6 +180,17 @@ router.put('/:id/assignee', async (req, res, next) => {
 });
 
 // POST /api/tasks/:id/comments
+/**
+ * @swagger
+ * /:id/comments:
+ *   post:
+ *     summary: POST /:id/comments
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/:id/comments', async (req, res, next) => {
   try {
     const { content } = req.body;
@@ -113,6 +201,17 @@ router.post('/:id/comments', async (req, res, next) => {
 });
 
 // GET /api/tasks/:id/comments
+/**
+ * @swagger
+ * /:id/comments:
+ *   get:
+ *     summary: GET /:id/comments
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/comments', async (req, res, next) => {
   try {
     const comments = await Task.getComments(parseInt(req.params.id));
@@ -121,6 +220,17 @@ router.get('/:id/comments', async (req, res, next) => {
 });
 
 // POST /api/tasks/:id/time-entries
+/**
+ * @swagger
+ * /:id/time-entries:
+ *   post:
+ *     summary: POST /:id/time-entries
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/:id/time-entries', validate(schemas.timeEntry), async (req, res, next) => {
   try {
     const entry = await Task.addTimeEntry(parseInt(req.params.id), req.user.id, req.body);
@@ -129,6 +239,17 @@ router.post('/:id/time-entries', validate(schemas.timeEntry), async (req, res, n
 });
 
 // GET /api/tasks/:id/time-entries
+/**
+ * @swagger
+ * /:id/time-entries:
+ *   get:
+ *     summary: GET /:id/time-entries
+ *     tags:
+ *       - Tasks
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/time-entries', async (req, res, next) => {
   try {
     const entries = await Task.getTimeEntries(parseInt(req.params.id));

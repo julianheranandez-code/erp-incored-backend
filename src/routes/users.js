@@ -16,6 +16,17 @@ const { getPagination, buildPaginatedResponse } = require('../utils/helpers');
 router.use(verifyToken, auditLog);
 
 // GET /api/users
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: GET /
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit, offset } = getPagination(req.query);
@@ -37,6 +48,17 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/users/:id
+/**
+ * @swagger
+ * /:id:
+ *   get:
+ *     summary: GET /:id
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
@@ -54,6 +76,17 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/users
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: POST /
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/',
   authorize('admin', 'manager'),
   validate(schemas.createUser),
@@ -86,6 +119,17 @@ router.post('/',
 );
 
 // PUT /api/users/:id
+/**
+ * @swagger
+ * /:id:
+ *   put:
+ *     summary: PUT /:id
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id',
   validate(schemas.updateUser),
   async (req, res, next) => {
@@ -113,6 +157,17 @@ router.put('/:id',
 );
 
 // DELETE /api/users/:id (soft delete)
+/**
+ * @swagger
+ * /:id:
+ *   delete:
+ *     summary: DELETE /:id
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.delete('/:id',
   authorize('admin'),
   async (req, res, next) => {
@@ -129,6 +184,17 @@ router.delete('/:id',
 );
 
 // GET /api/users/:id/permissions
+/**
+ * @swagger
+ * /:id/permissions:
+ *   get:
+ *     summary: GET /:id/permissions
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/permissions', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
@@ -149,6 +215,17 @@ router.get('/:id/permissions', async (req, res, next) => {
 });
 
 // PUT /api/users/:id/role
+/**
+ * @swagger
+ * /:id/role:
+ *   put:
+ *     summary: PUT /:id/role
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id/role',
   authorize('admin'),
   async (req, res, next) => {
@@ -166,6 +243,17 @@ router.put('/:id/role',
 );
 
 // GET /api/roles
+/**
+ * @swagger
+ * /meta/roles:
+ *   get:
+ *     summary: GET /meta/roles
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/meta/roles', (req, res) => {
   res.json({
     success: true,
@@ -183,6 +271,17 @@ router.get('/meta/roles', (req, res) => {
 });
 
 // PUT /api/users/:id/change-password
+/**
+ * @swagger
+ * /:id/change-password:
+ *   put:
+ *     summary: PUT /:id/change-password
+ *     tags:
+ *       - Users
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id/change-password', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);

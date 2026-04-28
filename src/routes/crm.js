@@ -18,6 +18,17 @@ router.use(verifyToken, auditLog);
 
 // ─── CLIENTS ─────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /clients:
+ *   get:
+ *     summary: GET /clients
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/clients', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -26,6 +37,17 @@ router.get('/clients', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /clients/:id:
+ *   get:
+ *     summary: GET /clients/:id
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/clients/:id', async (req, res, next) => {
   try {
     const client = await Client.findById(parseInt(req.params.id));
@@ -34,6 +56,17 @@ router.get('/clients/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /clients:
+ *   post:
+ *     summary: POST /clients
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/clients', validate(schemas.createClient), async (req, res, next) => {
   try {
     req.body.type = req.body.type || 'cliente';
@@ -42,6 +75,17 @@ router.post('/clients', validate(schemas.createClient), async (req, res, next) =
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /clients/:id:
+ *   put:
+ *     summary: PUT /clients/:id
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/clients/:id', async (req, res, next) => {
   try {
     const client = await Client.update(parseInt(req.params.id), req.body);
@@ -52,6 +96,17 @@ router.put('/clients/:id', async (req, res, next) => {
 
 // ─── SUPPLIERS ───────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /suppliers:
+ *   get:
+ *     summary: GET /suppliers
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/suppliers', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -60,6 +115,17 @@ router.get('/suppliers', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /suppliers:
+ *   post:
+ *     summary: POST /suppliers
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/suppliers', validate(schemas.createClient), async (req, res, next) => {
   try {
     req.body.type = 'proveedor';
@@ -70,6 +136,17 @@ router.post('/suppliers', validate(schemas.createClient), async (req, res, next)
 
 // ─── LEADS ───────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /leads:
+ *   get:
+ *     summary: GET /leads
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/leads', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -91,6 +168,17 @@ router.get('/leads', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /leads:
+ *   post:
+ *     summary: POST /leads
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/leads', async (req, res, next) => {
   try {
     const result = await query(
@@ -106,6 +194,17 @@ router.post('/leads', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /leads/:id/stage:
+ *   put:
+ *     summary: PUT /leads/:id/stage
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/leads/:id/stage', async (req, res, next) => {
   try {
     const { stage } = req.body;
@@ -119,6 +218,17 @@ router.put('/leads/:id/stage', async (req, res, next) => {
 
 // ─── QUOTES ──────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /quotes:
+ *   get:
+ *     summary: GET /quotes
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/quotes', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -128,6 +238,17 @@ router.get('/quotes', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes/:id:
+ *   get:
+ *     summary: GET /quotes/:id
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/quotes/:id', async (req, res, next) => {
   try {
     const quote = await Quote.findById(parseInt(req.params.id));
@@ -136,6 +257,17 @@ router.get('/quotes/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes:
+ *   post:
+ *     summary: POST /quotes
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/quotes', validate(schemas.createQuote), async (req, res, next) => {
   try {
     // Auto-generate folio
@@ -147,6 +279,17 @@ router.post('/quotes', validate(schemas.createQuote), async (req, res, next) => 
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes/:id:
+ *   put:
+ *     summary: PUT /quotes/:id
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/quotes/:id', async (req, res, next) => {
   try {
     const quote = await Quote.findById(parseInt(req.params.id));
@@ -160,6 +303,17 @@ router.put('/quotes/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes/:id/status:
+ *   put:
+ *     summary: PUT /quotes/:id/status
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/quotes/:id/status', async (req, res, next) => {
   try {
     const updated = await Quote.updateStatus(parseInt(req.params.id), req.body.status);
@@ -168,6 +322,17 @@ router.put('/quotes/:id/status', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes/:id/send-email:
+ *   post:
+ *     summary: POST /quotes/:id/send-email
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/quotes/:id/send-email', async (req, res, next) => {
   try {
     const quote = await Quote.findById(parseInt(req.params.id));
@@ -184,6 +349,17 @@ router.post('/quotes/:id/send-email', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /quotes/:id/pdf:
+ *   get:
+ *     summary: GET /quotes/:id/pdf
+ *     tags:
+ *       - CRM
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/quotes/:id/pdf', async (req, res, next) => {
   try {
     const quote = await Quote.findById(parseInt(req.params.id));

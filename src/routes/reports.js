@@ -18,6 +18,17 @@ const getCompanyId = (req) => req.user.role === 'admin' ? (req.query.company_id 
 // ─── DASHBOARDS ───────────────────────────────────────────────────────────────
 
 // GET /api/dashboards/executive
+/**
+ * @swagger
+ * /dashboards/executive:
+ *   get:
+ *     summary: GET /dashboards/executive
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/dashboards/executive', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -64,6 +75,17 @@ router.get('/dashboards/executive', async (req, res, next) => {
 });
 
 // GET /api/dashboards/operations
+/**
+ * @swagger
+ * /dashboards/operations:
+ *   get:
+ *     summary: GET /dashboards/operations
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/dashboards/operations', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -94,6 +116,17 @@ router.get('/dashboards/operations', async (req, res, next) => {
 });
 
 // GET /api/dashboards/finance
+/**
+ * @swagger
+ * /dashboards/finance:
+ *   get:
+ *     summary: GET /dashboards/finance
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/dashboards/finance', authorize('admin', 'finance', 'manager'), async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -125,6 +158,17 @@ router.get('/dashboards/finance', authorize('admin', 'finance', 'manager'), asyn
 });
 
 // GET /api/dashboards/hr
+/**
+ * @swagger
+ * /dashboards/hr:
+ *   get:
+ *     summary: GET /dashboards/hr
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/dashboards/hr', authorize('admin', 'hr', 'manager'), async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -151,6 +195,17 @@ router.get('/dashboards/hr', authorize('admin', 'hr', 'manager'), async (req, re
 // ─── REPORTS ─────────────────────────────────────────────────────────────────
 
 // GET /api/reports/projects
+/**
+ * @swagger
+ * /reports/projects:
+ *   get:
+ *     summary: GET /reports/projects
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/projects', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -175,6 +230,17 @@ router.get('/reports/projects', async (req, res, next) => {
 });
 
 // GET /api/reports/tasks
+/**
+ * @swagger
+ * /reports/tasks:
+ *   get:
+ *     summary: GET /reports/tasks
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/tasks', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -191,6 +257,17 @@ router.get('/reports/tasks', async (req, res, next) => {
 });
 
 // GET /api/reports/timesheet
+/**
+ * @swagger
+ * /reports/timesheet:
+ *   get:
+ *     summary: GET /reports/timesheet
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/timesheet', exportLimiter, async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -220,6 +297,17 @@ router.get('/reports/timesheet', exportLimiter, async (req, res, next) => {
 });
 
 // GET /api/reports/income-statement
+/**
+ * @swagger
+ * /reports/income-statement:
+ *   get:
+ *     summary: GET /reports/income-statement
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/income-statement', authorize('admin', 'finance', 'manager'), async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
@@ -244,6 +332,17 @@ router.get('/reports/income-statement', authorize('admin', 'finance', 'manager')
 });
 
 // GET /api/reports/audit
+/**
+ * @swagger
+ * /reports/audit:
+ *   get:
+ *     summary: GET /reports/audit
+ *     tags:
+ *       - Reports
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/audit', authorize('admin'), async (req, res, next) => {
   try {
     const result = await query(

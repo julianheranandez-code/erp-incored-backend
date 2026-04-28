@@ -26,6 +26,17 @@ const { writeAudit } = require('../middleware/audit');
 const logger = require('../utils/logger');
 
 // ─── POST /api/auth/signup ────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /signup:
+ *   post:
+ *     summary: POST /signup
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/signup',
   validate(schemas.signup),
   async (req, res, next) => {
@@ -81,6 +92,17 @@ router.post('/signup',
 );
 
 // ─── POST /api/auth/login ─────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /login:
+ *   post:
+ *     summary: POST /login
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/login',
   loginLimiter,
   validate(schemas.login),
@@ -173,6 +195,17 @@ router.post('/login',
 );
 
 // ─── POST /api/auth/logout ────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /logout:
+ *   post:
+ *     summary: POST /logout
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/logout',
   verifyToken,
   async (req, res, next) => {
@@ -200,6 +233,17 @@ router.post('/logout',
 );
 
 // ─── POST /api/auth/refresh ───────────────────────────────────────────────────
+/**
+ * @swagger
+ * /refresh:
+ *   post:
+ *     summary: POST /refresh
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/refresh',
   validate(schemas.refreshToken),
   async (req, res, next) => {
@@ -242,6 +286,17 @@ router.post('/refresh',
 );
 
 // ─── POST /api/auth/request-password-reset ────────────────────────────────────
+/**
+ * @swagger
+ * /request-password-reset:
+ *   post:
+ *     summary: POST /request-password-reset
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/request-password-reset',
   passwordResetLimiter,
   validate(schemas.passwordResetRequest),
@@ -282,6 +337,17 @@ router.post('/request-password-reset',
 );
 
 // ─── POST /api/auth/reset-password ───────────────────────────────────────────
+/**
+ * @swagger
+ * /reset-password:
+ *   post:
+ *     summary: POST /reset-password
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/reset-password',
   validate(schemas.passwordReset),
   async (req, res, next) => {
@@ -324,6 +390,17 @@ router.post('/reset-password',
 );
 
 // ─── POST /api/auth/enable-2fa ────────────────────────────────────────────────
+/**
+ * @swagger
+ * /enable-2fa:
+ *   post:
+ *     summary: POST /enable-2fa
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/enable-2fa',
   verifyToken,
   async (req, res, next) => {
@@ -357,6 +434,17 @@ router.post('/enable-2fa',
 );
 
 // ─── POST /api/auth/confirm-2fa ───────────────────────────────────────────────
+/**
+ * @swagger
+ * /confirm-2fa:
+ *   post:
+ *     summary: POST /confirm-2fa
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/confirm-2fa',
   verifyToken,
   validate(schemas.verify2fa),
@@ -407,6 +495,17 @@ router.post('/confirm-2fa',
 );
 
 // ─── POST /api/auth/verify-2fa ────────────────────────────────────────────────
+/**
+ * @swagger
+ * /verify-2fa:
+ *   post:
+ *     summary: POST /verify-2fa
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/verify-2fa',
   async (req, res, next) => {
     try {
@@ -466,6 +565,17 @@ router.post('/verify-2fa',
 );
 
 // ─── GET /api/auth/me ─────────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /me:
+ *   get:
+ *     summary: GET /me
+ *     tags:
+ *       - Auth
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/me', verifyToken, async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);

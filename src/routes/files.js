@@ -93,6 +93,17 @@ const getUpload = () => {
 };
 
 // ─── POST /api/files/upload ───────────────────────────────────────────────────
+/**
+ * @swagger
+ * /upload:
+ *   post:
+ *     summary: POST /upload
+ *     tags:
+ *       - Files
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/upload', uploadLimiter, (req, res, next) => {
   const uploader = getUpload();
   uploader.single('file')(req, res, async (err) => {
@@ -153,6 +164,17 @@ router.post('/upload', uploadLimiter, (req, res, next) => {
 });
 
 // ─── GET /api/files/:id/download ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /:id/download:
+ *   get:
+ *     summary: GET /:id/download
+ *     tags:
+ *       - Files
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/download', async (req, res, next) => {
   try {
     const result = await query(
@@ -200,6 +222,17 @@ router.get('/:id/download', async (req, res, next) => {
 });
 
 // ─── DELETE /api/files/:id ────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /:id:
+ *   delete:
+ *     summary: DELETE /:id
+ *     tags:
+ *       - Files
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.delete('/:id', async (req, res, next) => {
   try {
     const result = await query(
@@ -236,6 +269,17 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 // ─── POST /api/files/:id/share ────────────────────────────────────────────────
+/**
+ * @swagger
+ * /:id/share:
+ *   post:
+ *     summary: POST /:id/share
+ *     tags:
+ *       - Files
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/:id/share', async (req, res, next) => {
   try {
     const { expires_hours = 24 } = req.body;
@@ -268,6 +312,17 @@ router.post('/:id/share', async (req, res, next) => {
 });
 
 // ─── GET /api/files/shared/:token (public endpoint) ──────────────────────────
+/**
+ * @swagger
+ * /shared/:token:
+ *   get:
+ *     summary: GET /shared/:token
+ *     tags:
+ *       - Files
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/shared/:token', async (req, res, next) => {
   try {
     const result = await query(

@@ -14,6 +14,17 @@ const { getPagination, buildPaginatedResponse, generateProjectCode } = require('
 router.use(verifyToken, auditLog);
 
 // GET /api/projects
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: GET /
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -35,6 +46,17 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/projects/:id
+/**
+ * @swagger
+ * /:id:
+ *   get:
+ *     summary: GET /:id
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const project = await Project.findById(parseInt(req.params.id));
@@ -50,6 +72,17 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/projects
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: POST /
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/',
   authorize('admin', 'manager', 'project_manager'),
   validate(schemas.createProject),
@@ -77,6 +110,17 @@ router.post('/',
 );
 
 // PUT /api/projects/:id
+/**
+ * @swagger
+ * /:id:
+ *   put:
+ *     summary: PUT /:id
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id',
   authorize('admin', 'manager', 'project_manager'),
   validate(schemas.updateProject),
@@ -96,6 +140,17 @@ router.put('/:id',
 );
 
 // DELETE /api/projects/:id
+/**
+ * @swagger
+ * /:id:
+ *   delete:
+ *     summary: DELETE /:id
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.delete('/:id',
   authorize('admin', 'manager'),
   async (req, res, next) => {
@@ -108,6 +163,17 @@ router.delete('/:id',
 );
 
 // PUT /api/projects/:id/status
+/**
+ * @swagger
+ * /:id/status:
+ *   put:
+ *     summary: PUT /:id/status
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id/status', async (req, res, next) => {
   try {
     const { status, progress_percent } = req.body;
@@ -127,6 +193,17 @@ router.put('/:id/status', async (req, res, next) => {
 });
 
 // GET /api/projects/:id/finances
+/**
+ * @swagger
+ * /:id/finances:
+ *   get:
+ *     summary: GET /:id/finances
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/finances', async (req, res, next) => {
   try {
     const finances = await Project.getFinances(parseInt(req.params.id));
@@ -135,6 +212,17 @@ router.get('/:id/finances', async (req, res, next) => {
 });
 
 // GET /api/projects/:id/kanban
+/**
+ * @swagger
+ * /:id/kanban:
+ *   get:
+ *     summary: GET /:id/kanban
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/kanban', async (req, res, next) => {
   try {
     const kanban = await Project.getKanban(parseInt(req.params.id));
@@ -143,6 +231,17 @@ router.get('/:id/kanban', async (req, res, next) => {
 });
 
 // GET /api/projects/:id/gantt
+/**
+ * @swagger
+ * /:id/gantt:
+ *   get:
+ *     summary: GET /:id/gantt
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/gantt', async (req, res, next) => {
   try {
     const gantt = await Project.getGantt(parseInt(req.params.id));
@@ -151,6 +250,17 @@ router.get('/:id/gantt', async (req, res, next) => {
 });
 
 // GET /api/projects/:id/team
+/**
+ * @swagger
+ * /:id/team:
+ *   get:
+ *     summary: GET /:id/team
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/team', async (req, res, next) => {
   try {
     const team = await Project.getTeam(parseInt(req.params.id));
@@ -159,6 +269,17 @@ router.get('/:id/team', async (req, res, next) => {
 });
 
 // POST /api/projects/:id/team
+/**
+ * @swagger
+ * /:id/team:
+ *   post:
+ *     summary: POST /:id/team
+ *     tags:
+ *       - Projects
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/:id/team',
   authorize('admin', 'manager', 'project_manager'),
   async (req, res, next) => {

@@ -14,6 +14,17 @@ const { getPagination, buildPaginatedResponse } = require('../utils/helpers');
 router.use(verifyToken, auditLog);
 
 // GET /api/employees
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: GET /
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -24,6 +35,17 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/employees/:id
+/**
+ * @swagger
+ * /:id:
+ *   get:
+ *     summary: GET /:id
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const emp = await Employee.findById(parseInt(req.params.id));
@@ -36,6 +58,17 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/employees
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: POST /
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/',
   authorize('admin', 'manager', 'hr'),
   validate(schemas.createEmployee),
@@ -48,6 +81,17 @@ router.post('/',
 );
 
 // PUT /api/employees/:id
+/**
+ * @swagger
+ * /:id:
+ *   put:
+ *     summary: PUT /:id
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id',
   authorize('admin', 'manager', 'hr'),
   async (req, res, next) => {
@@ -60,6 +104,17 @@ router.put('/:id',
 );
 
 // GET /api/employees/:id/contracts
+/**
+ * @swagger
+ * /:id/contracts:
+ *   get:
+ *     summary: GET /:id/contracts
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id/contracts', async (req, res, next) => {
   try {
     const contracts = await Employee.getContracts(parseInt(req.params.id));
@@ -68,6 +123,17 @@ router.get('/:id/contracts', async (req, res, next) => {
 });
 
 // POST /api/employees/:id/contracts
+/**
+ * @swagger
+ * /:id/contracts:
+ *   post:
+ *     summary: POST /:id/contracts
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/:id/contracts',
   authorize('admin', 'manager', 'hr'),
   async (req, res, next) => {
@@ -79,6 +145,17 @@ router.post('/:id/contracts',
 );
 
 // GET /api/vacations
+/**
+ * @swagger
+ * /vacations:
+ *   get:
+ *     summary: GET /vacations
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/vacations', async (req, res, next) => {
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
@@ -92,6 +169,17 @@ router.get('/vacations', async (req, res, next) => {
 });
 
 // POST /api/vacations
+/**
+ * @swagger
+ * /vacations:
+ *   post:
+ *     summary: POST /vacations
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/vacations', async (req, res, next) => {
   try {
     const { employee_id, start_date, end_date, reason } = req.body;
@@ -104,6 +192,17 @@ router.post('/vacations', async (req, res, next) => {
 });
 
 // PUT /api/vacations/:id
+/**
+ * @swagger
+ * /vacations/:id:
+ *   put:
+ *     summary: PUT /vacations/:id
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/vacations/:id',
   authorize('admin', 'manager', 'hr'),
   async (req, res, next) => {
@@ -120,6 +219,17 @@ router.put('/vacations/:id',
 
 // ─── PAYROLL ──────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /payroll:
+ *   get:
+ *     summary: GET /payroll
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/payroll', authorize('admin', 'finance', 'hr'), async (req, res, next) => {
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
@@ -136,6 +246,17 @@ router.get('/payroll', authorize('admin', 'finance', 'hr'), async (req, res, nex
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /payroll/generate:
+ *   post:
+ *     summary: POST /payroll/generate
+ *     tags:
+ *       - Employees
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/payroll/generate', authorize('admin', 'finance', 'hr'), async (req, res, next) => {
   try {
     const { company_id, period_start, period_end, period_type } = req.body;

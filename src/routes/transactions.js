@@ -13,6 +13,17 @@ const { getPagination, buildPaginatedResponse } = require('../utils/helpers');
 router.use(verifyToken, auditLog);
 
 // GET /api/transactions
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: GET /
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -32,6 +43,17 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/transactions/:id
+/**
+ * @swagger
+ * /:id:
+ *   get:
+ *     summary: GET /:id
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/:id', async (req, res, next) => {
   try {
     const tx = await Transaction.findById(parseInt(req.params.id));
@@ -44,6 +66,17 @@ router.get('/:id', async (req, res, next) => {
 });
 
 // POST /api/transactions
+/**
+ * @swagger
+ * /:
+ *   post:
+ *     summary: POST /
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/',
   authorize('admin', 'manager', 'finance', 'project_manager'),
   validate(schemas.createTransaction),
@@ -56,6 +89,17 @@ router.post('/',
 );
 
 // PUT /api/transactions/:id
+/**
+ * @swagger
+ * /:id:
+ *   put:
+ *     summary: PUT /:id
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/:id',
   authorize('admin', 'manager', 'finance'),
   async (req, res, next) => {
@@ -68,6 +112,17 @@ router.put('/:id',
 );
 
 // GET /api/dashboards/pnl
+/**
+ * @swagger
+ * /reports/pnl:
+ *   get:
+ *     summary: GET /reports/pnl
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/pnl', async (req, res, next) => {
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
@@ -78,6 +133,17 @@ router.get('/reports/pnl', async (req, res, next) => {
 });
 
 // GET /api/dashboards/cash-flow
+/**
+ * @swagger
+ * /reports/cash-flow:
+ *   get:
+ *     summary: GET /reports/cash-flow
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/reports/cash-flow', async (req, res, next) => {
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
@@ -87,6 +153,17 @@ router.get('/reports/cash-flow', async (req, res, next) => {
 });
 
 // GET /api/transactions categories
+/**
+ * @swagger
+ * /meta/categories:
+ *   get:
+ *     summary: GET /meta/categories
+ *     tags:
+ *       - Transactions
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/meta/categories', (req, res) => {
   res.json({
     success: true,

@@ -16,6 +16,17 @@ router.use(verifyToken, auditLog);
 
 // ─── MATERIALS ───────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /materials:
+ *   get:
+ *     summary: GET /materials
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/materials', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -28,6 +39,17 @@ router.get('/materials', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /materials/:id:
+ *   get:
+ *     summary: GET /materials/:id
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/materials/:id', async (req, res, next) => {
   try {
     const material = await Inventory.findMaterialById(parseInt(req.params.id));
@@ -36,6 +58,17 @@ router.get('/materials/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /materials:
+ *   post:
+ *     summary: POST /materials
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/materials',
   authorize('admin', 'manager', 'project_manager', 'supervisor'),
   validate(schemas.createMaterial),
@@ -47,6 +80,17 @@ router.post('/materials',
   }
 );
 
+/**
+ * @swagger
+ * /materials/:id:
+ *   put:
+ *     summary: PUT /materials/:id
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/materials/:id', async (req, res, next) => {
   try {
     const allowed = ['name', 'category', 'quantity_min', 'quantity_max', 'unit_of_measure', 'cost_last_purchase', 'supplier_id', 'location'];
@@ -63,6 +107,17 @@ router.put('/materials/:id', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /materials/:id/movement:
+ *   post:
+ *     summary: POST /materials/:id/movement
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/materials/:id/movement',
   validate(schemas.inventoryMovement),
   async (req, res, next) => {
@@ -75,6 +130,17 @@ router.post('/materials/:id/movement',
 
 // ─── TOOLS ───────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /tools:
+ *   get:
+ *     summary: GET /tools
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/tools', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -84,6 +150,17 @@ router.get('/tools', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /tools:
+ *   post:
+ *     summary: POST /tools
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/tools', authorize('admin', 'manager'), async (req, res, next) => {
   try {
     const result = await query(
@@ -98,6 +175,17 @@ router.post('/tools', authorize('admin', 'manager'), async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /tools/:id/location:
+ *   put:
+ *     summary: PUT /tools/:id/location
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/tools/:id/location', async (req, res, next) => {
   try {
     const { current_project, status } = req.body;
@@ -113,6 +201,17 @@ router.put('/tools/:id/location', async (req, res, next) => {
 
 // ─── VEHICLES ────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /vehicles:
+ *   get:
+ *     summary: GET /vehicles
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/vehicles', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
@@ -122,6 +221,17 @@ router.get('/vehicles', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /vehicles:
+ *   post:
+ *     summary: POST /vehicles
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.post('/vehicles', authorize('admin', 'manager'), async (req, res, next) => {
   try {
     const result = await query(
@@ -135,6 +245,17 @@ router.post('/vehicles', authorize('admin', 'manager'), async (req, res, next) =
   } catch (error) { next(error); }
 });
 
+/**
+ * @swagger
+ * /vehicles/:id:
+ *   put:
+ *     summary: PUT /vehicles/:id
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.put('/vehicles/:id', async (req, res, next) => {
   try {
     const allowed = ['status', 'current_project', 'assigned_driver', 'odometer', 'insurance_expiry', 'next_service_km', 'notes'];
@@ -153,6 +274,17 @@ router.put('/vehicles/:id', async (req, res, next) => {
 
 // ─── REPORTS ─────────────────────────────────────────────────────────────────
 
+/**
+ * @swagger
+ * /report:
+ *   get:
+ *     summary: GET /report
+ *     tags:
+ *       - Inventory
+ *     responses:
+ *       200:
+ *         description: Success
+ */
 router.get('/report', async (req, res, next) => {
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
