@@ -138,7 +138,7 @@ class Employee {
     const offset = (page - 1) * limit;
 
     const result = await query(
-      `SELECT vr.*, e.name AS employee_name, u.name AS approved_by_name
+      `SELECT vr.*, e.name AS employee_name, CONCAT(u.first_name, ' ', u.last_name) AS approved_by_name
        FROM vacation_requests vr
        JOIN employees e ON e.id = vr.employee_id
        LEFT JOIN users u ON u.id = vr.approved_by

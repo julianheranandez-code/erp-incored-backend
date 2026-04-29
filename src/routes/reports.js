@@ -210,7 +210,7 @@ router.get('/reports/projects', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
     const result = await query(
-      `SELECT p.*, c.name AS client_name, co.name AS company_name, u.name AS pm_name
+      `SELECT p.*, c.name AS client_name, co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS pm_name
        FROM projects p
        LEFT JOIN clients c ON c.id = p.client_id
        LEFT JOIN companies co ON co.id = p.company_id
@@ -245,7 +245,7 @@ router.get('/reports/tasks', async (req, res, next) => {
   try {
     const companyId = getCompanyId(req);
     const result = await query(
-      `SELECT t.*, u.name AS assignee_name, p.name AS project_name, p.code AS project_code
+      `SELECT t.*, CONCAT(u.first_name, ' ', u.last_name) AS assignee_name, p.name AS project_name, p.code AS project_code
        FROM tasks t
        LEFT JOIN users u ON u.id = t.assigned_to
        LEFT JOIN projects p ON p.id = t.project_id
@@ -275,7 +275,7 @@ router.get('/reports/timesheet', exportLimiter, async (req, res, next) => {
     const dateTo = req.query.date_to || new Date().toISOString().split('T')[0];
 
     const result = await query(
-      `SELECT te.*, u.name AS user_name, t.title AS task_title, p.name AS project_name
+      `SELECT te.*, CONCAT(u.first_name, ' ', u.last_name) AS user_name, t.title AS task_title, p.name AS project_name
        FROM time_entries te
        JOIN users u ON u.id = te.user_id
        JOIN tasks t ON t.id = te.task_id
@@ -346,7 +346,7 @@ router.get('/reports/income-statement', authorize('admin', 'finance', 'manager')
 router.get('/reports/audit', authorize('admin'), async (req, res, next) => {
   try {
     const result = await query(
-      `SELECT al.*, u.name AS user_name, u.email AS user_email
+      `SELECT al.*, CONCAT(u.first_name, ' ', u.last_name) AS user_name, u.email AS user_email
        FROM audit_logs al
        LEFT JOIN users u ON u.id = al.user_id
        WHERE al.created_at >= NOW() - INTERVAL '30 days'

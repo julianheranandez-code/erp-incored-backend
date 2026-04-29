@@ -26,7 +26,7 @@ class Transaction {
     const [rows, countResult, sumResult] = await Promise.all([
       query(
         `SELECT t.*, c.name AS client_name, p.name AS project_name,
-                co.name AS company_name, u.name AS created_by_name
+                co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS created_by_name
          FROM transactions t
          LEFT JOIN clients c ON c.id = t.client_id
          LEFT JOIN projects p ON p.id = t.project_id
@@ -60,7 +60,7 @@ class Transaction {
   static async findById(id) {
     const result = await query(
       `SELECT t.*, c.name AS client_name, p.name AS project_name,
-              co.name AS company_name, u.name AS created_by_name
+              co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS created_by_name
        FROM transactions t
        LEFT JOIN clients c ON c.id = t.client_id
        LEFT JOIN projects p ON p.id = t.project_id

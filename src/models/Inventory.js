@@ -52,7 +52,7 @@ class Inventory {
         [id]
       ),
       query(
-        `SELECT mv.*, u.name AS created_by_name, p.name AS project_name
+        `SELECT mv.*, CONCAT(u.first_name, ' ', u.last_name) AS created_by_name, p.name AS project_name
          FROM inventory_movements mv
          LEFT JOIN users u ON u.id = mv.created_by
          LEFT JOIN projects p ON p.id = mv.project_id

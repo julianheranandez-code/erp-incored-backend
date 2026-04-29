@@ -142,7 +142,7 @@ class Project {
 
   static async getTeam(id) {
     const result = await query(
-      `SELECT u.id, u.name, u.email, u.role, pm.role AS project_role, pm.added_at
+      `SELECT u.id, CONCAT(u.first_name, ' ', u.last_name) AS name, u.email, u.role, pm.role AS project_role, pm.added_at
        FROM project_members pm
        JOIN users u ON u.id = pm.user_id
        WHERE pm.project_id = $1
@@ -154,7 +154,7 @@ class Project {
 
   static async getKanban(id) {
     const result = await query(
-      `SELECT t.*, u.name AS assignee_name
+      `SELECT t.*, CONCAT(u.first_name, ' ', u.last_name) AS assignee_name
        FROM tasks t
        LEFT JOIN users u ON u.id = t.assigned_to
        WHERE t.project_id = $1
@@ -178,7 +178,7 @@ class Project {
     const result = await query(
       `SELECT t.id, t.title, t.status, t.priority, t.start_date, t.due_date,
               t.percent_complete, t.estimated_hours, t.actual_hours,
-              t.assigned_to, u.name AS assignee_name, t.parent_task_id
+              t.assigned_to, CONCAT(u.first_name, ' ', u.last_name) AS assignee_name, t.parent_task_id
        FROM tasks t
        LEFT JOIN users u ON u.id = t.assigned_to
        WHERE t.project_id = $1 AND t.status != 'cancelada'

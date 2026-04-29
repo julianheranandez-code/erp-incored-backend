@@ -37,7 +37,7 @@ class Task {
 
     const [rows, countResult] = await Promise.all([
       query(
-        `SELECT t.*, u.name AS assignee_name, cr.name AS creator_name,
+        `SELECT t.*, CONCAT(u.first_name, ' ', u.last_name) AS assignee_name, CONCAT(cr.first_name, ' ', cr.last_name) AS creator_name,
                 p.name AS project_name, p.code AS project_code
          FROM tasks t
          LEFT JOIN users u ON u.id = t.assigned_to
@@ -58,8 +58,8 @@ class Task {
 
   static async findById(id) {
     const result = await query(
-      `SELECT t.*, u.name AS assignee_name, u.email AS assignee_email,
-              cr.name AS creator_name, p.name AS project_name, p.code AS project_code
+      `SELECT t.*, CONCAT(u.first_name, ' ', u.last_name) AS assignee_name, u.email AS assignee_email,
+              CONCAT(cr.first_name, ' ', cr.last_name) AS creator_name, p.name AS project_name, p.code AS project_code
        FROM tasks t
        LEFT JOIN users u ON u.id = t.assigned_to
        LEFT JOIN users cr ON cr.id = t.created_by
@@ -124,7 +124,7 @@ class Task {
 
   static async getComments(taskId) {
     const result = await query(
-      `SELECT tc.*, u.name AS author_name, u.avatar_url AS author_avatar
+      `SELECT tc.*, CONCAT(u.first_name, ' ', u.last_name) AS author_name, u.avatar_url AS author_avatar
        FROM task_comments tc
        JOIN users u ON u.id = tc.user_id
        WHERE tc.task_id = $1
@@ -161,7 +161,7 @@ class Task {
 
   static async getTimeEntries(taskId) {
     const result = await query(
-      `SELECT te.*, u.name AS user_name
+      `SELECT te.*, CONCAT(u.first_name, ' ', u.last_name) AS user_name
        FROM time_entries te
        JOIN users u ON u.id = te.user_id
        WHERE te.task_id = $1

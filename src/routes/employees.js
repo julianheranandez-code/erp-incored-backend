@@ -234,7 +234,7 @@ router.get('/payroll', authorize('admin', 'finance', 'hr'), async (req, res, nex
   try {
     const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
     const result = await query(
-      `SELECT pp.*, co.name AS company_name, u.name AS created_by_name
+      `SELECT pp.*, co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS created_by_name
        FROM payroll_periods pp
        LEFT JOIN companies co ON co.id = pp.company_id
        LEFT JOIN users u ON u.id = pp.created_by
