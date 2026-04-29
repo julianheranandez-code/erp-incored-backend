@@ -146,7 +146,7 @@ class Project {
        FROM project_members pm
        JOIN users u ON u.id = pm.user_id
        WHERE pm.project_id = $1
-       ORDER BY u.name`,
+       ORDER BY u.first_name`,
       [id]
     );
     return result.rows;

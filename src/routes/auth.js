@@ -355,7 +355,7 @@ router.post('/reset-password',
       const { token, newPassword } = req.body;
 
       const tokenResult = await query(
-        `SELECT prt.*, u.id AS user_id, u.name
+        `SELECT prt.*, u.id AS user_id, CONCAT(u.first_name, ' ', u.last_name) AS name
          FROM password_reset_tokens prt
          JOIN users u ON u.id = prt.user_id
          WHERE prt.token = $1 AND prt.used = false AND prt.expires_at > NOW()`,
