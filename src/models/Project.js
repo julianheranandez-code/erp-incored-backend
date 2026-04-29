@@ -31,7 +31,7 @@ class Project {
     const [rows, countResult] = await Promise.all([
       query(
         `SELECT p.*, c.name AS client_name, co.name AS company_name,
-                u.name AS pm_name
+                CONCAT(u.first_name, ' ', u.last_name) AS pm_name
          FROM projects p
          LEFT JOIN clients c ON c.id = p.client_id
          LEFT JOIN companies co ON co.id = p.company_id
@@ -51,7 +51,7 @@ class Project {
     const result = await query(
       `SELECT p.*, c.name AS client_name, c.rfc AS client_rfc,
               co.name AS company_name, co.short_code AS company_code,
-              u.name AS pm_name, u.email AS pm_email
+              CONCAT(u.first_name, ' ', u.last_name) AS pm_name, u.email AS pm_email
        FROM projects p
        LEFT JOIN clients c ON c.id = p.client_id
        LEFT JOIN companies co ON co.id = p.company_id
