@@ -37,23 +37,36 @@ class Client {
 
   static async create(data) {
     const {
-      company_id, name, type = 'cliente', rfc, country, state, city, address,
-      industry, website, primary_contact_name, primary_contact_email,
-      primary_contact_phone, credit_limit, payment_terms, credit_rating, notes
+      company_id, name, type = 'cliente', rfc, country, state, city,
+      address, address_street, address_colonia, address_zip,
+      industry, website,
+      primary_contact_name, primary_contact_email,
+      primary_contact_phone, primary_contact_position,
+      credit_limit, payment_terms, credit_rating,
+      attachment_url, notes
     } = data;
 
     const result = await query(
       `INSERT INTO clients
-        (company_id, name, type, rfc, country, state, city, address, industry, website,
-         primary_contact_name, primary_contact_email, primary_contact_phone,
-         credit_limit, payment_terms, credit_rating, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        (company_id, name, type, rfc, country, state, city, address,
+         address_street, address_colonia, address_zip,
+         industry, website,
+         primary_contact_name, primary_contact_email,
+         primary_contact_phone, primary_contact_position,
+         credit_limit, payment_terms, credit_rating,
+         attachment_url, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        RETURNING *`,
-      [company_id || null, name, type, rfc || null, country || null, state || null,
-       city || null, address || null, industry || null, website || null,
-       primary_contact_name || null, primary_contact_email || null,
-       primary_contact_phone || null, credit_limit || null,
-       payment_terms || null, credit_rating || null, notes || null]
+      [
+        company_id || null, name, type, rfc || null,
+        country || null, state || null, city || null, address || null,
+        address_street || null, address_colonia || null, address_zip || null,
+        industry || null, website || null,
+        primary_contact_name || null, primary_contact_email || null,
+        primary_contact_phone || null, primary_contact_position || null,
+        credit_limit || null, payment_terms || null, credit_rating || null,
+        attachment_url || null, notes || null
+      ]
     );
     return result.rows[0];
   }
@@ -66,16 +79,25 @@ class Client {
     const result = await query(
       `UPDATE clients SET
         name = $1, type = $2, rfc = $3, country = $4, state = $5, city = $6,
-        address = $7, industry = $8, website = $9, primary_contact_name = $10,
-        primary_contact_email = $11, primary_contact_phone = $12,
-        credit_limit = $13, payment_terms = $14, credit_rating = $15,
-        notes = $16, is_active = $17, updated_at = NOW()
-       WHERE id = $18 RETURNING *`,
-      [updated.name, updated.type, updated.rfc, updated.country, updated.state,
-       updated.city, updated.address, updated.industry, updated.website,
-       updated.primary_contact_name, updated.primary_contact_email,
-       updated.primary_contact_phone, updated.credit_limit, updated.payment_terms,
-       updated.credit_rating, updated.notes, updated.is_active !== false, id]
+        address = $7, address_street = $8, address_colonia = $9, address_zip = $10,
+        industry = $11, website = $12,
+        primary_contact_name = $13, primary_contact_email = $14,
+        primary_contact_phone = $15, primary_contact_position = $16,
+        credit_limit = $17, payment_terms = $18, credit_rating = $19,
+        attachment_url = $20, notes = $21, is_active = $22,
+        updated_at = NOW()
+       WHERE id = $23 RETURNING *`,
+      [
+        updated.name, updated.type, updated.rfc,
+        updated.country, updated.state, updated.city,
+        updated.address, updated.address_street, updated.address_colonia, updated.address_zip,
+        updated.industry, updated.website,
+        updated.primary_contact_name, updated.primary_contact_email,
+        updated.primary_contact_phone, updated.primary_contact_position,
+        updated.credit_limit, updated.payment_terms, updated.credit_rating,
+        updated.attachment_url, updated.notes,
+        updated.is_active !== false, id
+      ]
     );
     return result.rows[0];
   }
