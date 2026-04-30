@@ -109,7 +109,7 @@ const schemas = {
     name: Joi.string().min(2).max(255).trim().required(),
     client_id: Joi.number().integer().positive().required(),
     company_id: Joi.number().integer().positive().required(),
-    pm_id: Joi.number().integer().positive().optional(),
+    pm_id: Joi.string().uuid().optional(),
     order_number: Joi.string().max(100).optional().allow(''),
     budget_amount: Joi.number().positive().optional(),
     currency: Joi.string().length(3).default('MXN').optional(),
@@ -124,7 +124,7 @@ const schemas = {
   updateProject: Joi.object({
     name: Joi.string().min(2).max(255).trim().optional(),
     client_id: Joi.number().integer().positive().optional(),
-    pm_id: Joi.number().integer().positive().optional().allow(null),
+    pm_id: Joi.string().uuid().optional().allow(null),
     order_number: Joi.string().max(100).optional().allow(''),
     budget_amount: Joi.number().positive().optional(),
     currency: Joi.string().length(3).optional(),
