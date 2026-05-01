@@ -209,25 +209,37 @@ router.post('/leads', async (req, res, next) => {
 
 router.put('/leads/:id/stage', async (req, res, next) => {
   try {
-    const { stage, purchase_order_url, client_po_number, delivery_time, payment_conditions, po_comments } = req.body;
+    const { stage, purchase_order_url, client_po_number, delivery_time, 
+            payment_conditions, po_comments, purchase_order_date,
+            start_date, end_date, advance_payment_percent } = req.body;
     const validStages = ['prospecto', 'contactado', 'cotizacion', 'negociacion', 'ganado', 'perdido', 'cancelado'];
     if (!validStages.includes(stage)) return res.status(400).json({ success: false, error: 'validation_error', message: 'Etapa inválida.' });
     
     const isGanado = stage === 'ganado';
+    const advanceAmount = advance_payment_percent && req.body.value 
+      ? (parseFloat(req.body.value) * parseFloat(advance_payment_percent) / 100) 
+      : null;
+
     const result = await query(
       `UPDATE leads SET 
         stage = $1, 
         purchase_order_url = COALESCE($2, purchase_order_url),
-        purchase_order_date = CASE WHEN $3 AND purchase_order_date IS NULL THEN NOW() ELSE purchase_order_date END,
-        client_po_number = COALESCE($4, client_po_number),
-        delivery_time = COALESCE($5, delivery_time),
-        payment_conditions = COALESCE($6, payment_conditions),
-        po_comments = COALESCE($7, po_comments),
+        purchase_order_date = COALESCE($3, CASE WHEN $4 AND purchase_order_date IS NULL THEN NOW() ELSE purchase_order_date END),
+        client_po_number = COALESCE($5, client_po_number),
+        delivery_time = COALESCE($6, delivery_time),
+        payment_conditions = COALESCE($7, payment_conditions),
+        po_comments = COALESCE($8, po_comments),
+        start_date = COALESCE($9, start_date),
+        end_date = COALESCE($10, end_date),
+        advance_payment_percent = COALESCE($11, advance_payment_percent),
+        advance_payment_amount = COALESCE($12, advance_payment_amount),
         updated_at = NOW() 
-       WHERE id = $8 RETURNING *`,
-      [stage, purchase_order_url || null, isGanado, 
+       WHERE id = $13 RETURNING *`,
+      [stage, purchase_order_url || null, purchase_order_date || null, isGanado,
        client_po_number || null, delivery_time || null, 
        payment_conditions || null, po_comments || null,
+       start_date || null, end_date || null,
+       advance_payment_percent || null, advanceAmount,
        parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Lead no encontrado.' });
