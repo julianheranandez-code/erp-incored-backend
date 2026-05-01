@@ -206,9 +206,10 @@ router.post('/leads', async (req, res, next) => {
  *       200:
  *         description: Success
  */
+
 router.put('/leads/:id/stage', async (req, res, next) => {
   try {
-    const { stage, purchase_order_url } = req.body;
+    const { stage, purchase_order_url, client_po_number, delivery_time, payment_conditions, po_comments } = req.body;
     const validStages = ['prospecto', 'contactado', 'cotizacion', 'negociacion', 'ganado', 'perdido', 'cancelado'];
     if (!validStages.includes(stage)) return res.status(400).json({ success: false, error: 'validation_error', message: 'Etapa inválida.' });
     
@@ -218,14 +219,22 @@ router.put('/leads/:id/stage', async (req, res, next) => {
         stage = $1, 
         purchase_order_url = COALESCE($2, purchase_order_url),
         purchase_order_date = CASE WHEN $3 AND purchase_order_date IS NULL THEN NOW() ELSE purchase_order_date END,
+        client_po_number = COALESCE($4, client_po_number),
+        delivery_time = COALESCE($5, delivery_time),
+        payment_conditions = COALESCE($6, payment_conditions),
+        po_comments = COALESCE($7, po_comments),
         updated_at = NOW() 
-       WHERE id = $4 RETURNING *`,
-      [stage, purchase_order_url || null, isGanado, parseInt(req.params.id)]
+       WHERE id = $8 RETURNING *`,
+      [stage, purchase_order_url || null, isGanado, 
+       client_po_number || null, delivery_time || null, 
+       payment_conditions || null, po_comments || null,
+       parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Lead no encontrado.' });
     res.json({ success: true, message: 'Etapa actualizada.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
+
 
 // ─── QUOTES ──────────────────────────────────────────────────────────────────
 
