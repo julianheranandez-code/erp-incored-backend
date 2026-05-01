@@ -370,6 +370,15 @@ router.get('/quotes/:id/pdf', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.put('/suppliers/:id', async (req, res, next) => {
+  try {
+    const supplier = await Client.update(parseInt(req.params.id), req.body);
+    if (!supplier) return res.status(404).json({ success: false, error: 'not_found', message: 'Proveedor no encontrado.' });
+    res.json({ success: true, message: 'Proveedor actualizado.', data: supplier });
+  } catch (error) { next(error); }
+});
+
+
 router.delete('/clients/:id', async (req, res, next) => {
   try {
     const result = await query(
