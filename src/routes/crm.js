@@ -370,4 +370,25 @@ router.get('/quotes/:id/pdf', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.delete('/clients/:id', async (req, res, next) => {
+  try {
+    const result = await query(
+      `UPDATE clients SET is_active = false, updated_at = NOW() WHERE id = $1 RETURNING id`,
+      [parseInt(req.params.id)]
+    );
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Cliente no encontrado.' });
+    res.json({ success: true, message: 'Cliente eliminado.' });
+  } catch (error) { next(error); }
+});
+
+router.delete('/suppliers/:id', async (req, res, next) => {
+  try {
+    const result = await query(
+      `UPDATE clients SET is_active = false, updated_at = NOW() WHERE id = $1 RETURNING id`,
+      [parseInt(req.params.id)]
+    );
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Proveedor no encontrado.' });
+    res.json({ success: true, message: 'Proveedor eliminado.' });
+  } catch (error) { next(error); }
+});
 module.exports = router;
