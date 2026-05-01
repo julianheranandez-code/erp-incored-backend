@@ -182,13 +182,14 @@ router.get('/leads', async (req, res, next) => {
 router.post('/leads', async (req, res, next) => {
   try {
     const result = await query(
-      `INSERT INTO leads (title, client_id, company_id, assigned_to, stage, value, currency, probability, source, expected_close_date, notes, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+`INSERT INTO leads (title, client_id, company_id, assigned_to, stage, value, currency, probability, source, expected_close_date, notes, service_type, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
       [req.body.title, req.body.client_id || null, req.body.company_id || req.user.company_id,
        req.body.assigned_to || req.user.id, req.body.stage || 'prospecto',
        req.body.value || null, req.body.currency || 'MXN', req.body.probability || null,
        req.body.source || null, req.body.expected_close_date || null,
-       req.body.notes || null, req.user.id]
+       req.body.notes || null, req.body.service_type || null, req.user.id]
+
     );
     res.status(201).json({ success: true, message: 'Lead creado.', data: result.rows[0] });
   } catch (error) { next(error); }
