@@ -208,14 +208,23 @@ router.post('/leads', async (req, res, next) => {
  */
 router.put('/leads/:id/stage', async (req, res, next) => {
   try {
-    const { stage } = req.body;
+    const { stage, purchase_order_url } = req.body;
     const validStages = ['prospecto', 'contactado', 'cotizacion', 'negociacion', 'ganado', 'perdido', 'cancelado'];
     if (!validStages.includes(stage)) return res.status(400).json({ success: false, error: 'validation_error', message: 'Etapa inválida.' });
-    const result = await query(`UPDATE leads SET stage = $1, updated_at = NOW() WHERE id = $2 RETURNING *`, [stage, parseInt(req.params.id)]);
+    
+    const result = await query(
+      `UPDATE leads SET stage = $1, 
+        purchase_order_url = COALESCE($2, purchase_order_url),
+        purchase_order_date = CASE WHEN $1 = 'ganado' AND purchase_order_date IS NULL THEN NOW() ELSE purchase_order_date END,
+        updated_at = NOW() 
+       WHERE id = $3 RETURNING *`,
+      [stage, purchase_order_url || null, parseInt(req.params.id)]
+    );
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Lead no encontrado.' });
     res.json({ success: true, message: 'Etapa actualizada.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
+
 
 // ─── QUOTES ──────────────────────────────────────────────────────────────────
 
