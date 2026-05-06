@@ -22,6 +22,7 @@ const usersRoutes       = require('./routes/users');
 const projectsRoutes    = require('./routes/projects');
 const tasksRoutes       = require('./routes/tasks');
 const companiesRoutes = require('./routes/companies');
+const financeRoutes = require('./routes/finance');
 const crmRoutes         = require('./routes/crm');
 const transactionsRoutes = require('./routes/transactions');
 const inventoryRoutes   = require('./routes/inventory');
@@ -133,6 +134,7 @@ app.use('/api/users',        usersRoutes);
 app.use('/api/projects',     projectsRoutes);
 app.use('/api/tasks',        tasksRoutes);
 app.use('/api/companies',   companiesRoutes);
+app.use('/api/finance',     financeRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/inventory',    inventoryRoutes);
