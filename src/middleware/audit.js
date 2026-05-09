@@ -93,7 +93,7 @@ const auditLog = (req, res, next) => {
 
   res.on('finish', async () => {
     const shouldLog = req.method !== 'GET' ||
-      ['users','auth','transactions','employees','payroll'].includes(entityType);
+      ['payroll','banking','admin','finance-reports'].includes(entityType);
 
     if (!shouldLog) return;
     if (res.statusCode >= 500) return;
