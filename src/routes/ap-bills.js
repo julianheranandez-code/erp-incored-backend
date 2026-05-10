@@ -6,6 +6,7 @@ const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { queueRefresh } = require('../services/financeRefresh');
+const logger = require('../utils/logger');
 
 router.use(verifyToken);
 
@@ -59,11 +60,8 @@ router.get('/', async (req, res, next) => {
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
 
     const [bills, summary, aging, total] = await Promise.all([
-
-      // Bills list with joins
       query(`
-        SELECT
-          b.*,
+        SELECT b.*,
           v.name AS vendor_name, v.rfc AS vendor_rfc,
           p.name AS project_name, p.code AS project_code,
           co.name AS company_name,
@@ -82,21 +80,15 @@ router.get('/', async (req, res, next) => {
         LIMIT $${idx} OFFSET $${idx + 1}
       `, [...values, parseInt(limit), offset]),
 
-      // AP Summary
       query(`
         SELECT
-          COALESCE(SUM(total_amount), 0)  AS total_ap,
+          COALESCE(SUM(total_amount), 0) AS total_ap,
           COALESCE(SUM(outstanding_balance), 0) AS outstanding_ap,
-          COALESCE(SUM(outstanding_balance) FILTER (
-            WHERE due_date < CURRENT_DATE AND status NOT IN ('paid','cancelled')
-          ), 0) AS overdue_ap,
-          COALESCE(SUM(total_paid) FILTER (
-            WHERE DATE_TRUNC('month', issue_date) = DATE_TRUNC('month', CURRENT_DATE)
-          ), 0) AS paid_this_month
+          COALESCE(SUM(outstanding_balance) FILTER (WHERE due_date < CURRENT_DATE AND status NOT IN ('paid','cancelled')), 0) AS overdue_ap,
+          COALESCE(SUM(total_paid) FILTER (WHERE DATE_TRUNC('month', issue_date) = DATE_TRUNC('month', CURRENT_DATE)), 0) AS paid_this_month
         FROM ap_bills b ${where}
       `, values),
 
-      // AP Aging
       query(`
         SELECT
           COALESCE(SUM(outstanding_balance) FILTER (WHERE due_date >= CURRENT_DATE), 0) AS current_bucket,
@@ -106,7 +98,7 @@ router.get('/', async (req, res, next) => {
           COALESCE(SUM(outstanding_balance) FILTER (WHERE due_date < CURRENT_DATE - INTERVAL '90 days'), 0) AS days_90_plus
         FROM ap_bills b
         WHERE outstanding_balance > 0 AND status NOT IN ('paid','cancelled')
-        ${values.length ? 'AND b.company_id = $1' : ''}
+        ${authorizedCompanyId ? 'AND b.company_id = $1' : ''}
       `, authorizedCompanyId ? [authorizedCompanyId] : []),
 
       query(`SELECT COUNT(*) AS total FROM ap_bills b ${where}`, values)
@@ -148,8 +140,7 @@ router.get('/:id', async (req, res, next) => {
 
     const [bill, items, payments] = await Promise.all([
       query(`
-        SELECT
-          b.*,
+        SELECT b.*,
           v.name AS vendor_name, v.rfc AS vendor_rfc,
           v.primary_contact_name, v.primary_contact_email,
           p.name AS project_name, p.code AS project_code,
@@ -179,6 +170,9 @@ router.get('/:id', async (req, res, next) => {
 
 // ─── POST /api/ap-bills ───────────────────────────────────────
 router.post('/', async (req, res, next) => {
+  const startTime = Date.now();
+  logger.info('[AP Bills] POST / → request received');
+
   try {
     const {
       company_id, project_id, vendor_id, client_po_id,
@@ -197,7 +191,6 @@ router.post('/', async (req, res, next) => {
       });
     }
 
-    // Multi-company isolation
     if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
       return res.status(403).json({
         success: false, error: 'forbidden',
@@ -208,9 +201,12 @@ router.post('/', async (req, res, next) => {
     const tax_amount   = parseFloat(subtotal) * (parseFloat(tax_percent) / 100);
     const total_amount = parseFloat(subtotal) + tax_amount;
 
+    logger.info('[AP Bills] transaction starting');
+
+    // ── ATOMIC TRANSACTION ────────────────────────────────────
     const result = await withTransaction(async (client) => {
 
-      // 1. Create bill
+      // 1. Insert bill
       const bill = await client.query(`
         INSERT INTO ap_bills (
           company_id, project_id, vendor_id, client_po_id,
@@ -236,6 +232,8 @@ router.post('/', async (req, res, next) => {
         req.user.id
       ]);
 
+      logger.info(`[AP Bills] bill inserted id=${bill.rows[0].id}`);
+
       // 2. Insert line items
       if (items.length > 0) {
         for (let i = 0; i < items.length; i++) {
@@ -248,27 +246,37 @@ router.post('/', async (req, res, next) => {
           `, [bill.rows[0].id, item.description, item.quantity,
               item.unit || null, item.unit_cost, itemTotal, i + 1]);
         }
+        logger.info(`[AP Bills] ${items.length} items inserted`);
       }
-
-      // 3. Queue refresh
-      await client.query(`
-        INSERT INTO finance_refresh_queue (project_id, reason)
-        VALUES ($1, 'ap_bill.create') ON CONFLICT DO NOTHING
-      `, [parseInt(project_id)]);
 
       return bill.rows[0];
     });
+    // ── END TRANSACTION ───────────────────────────────────────
 
-    await writeAudit({
+    logger.info(`[AP Bills] transaction committed in ${Date.now() - startTime}ms`);
+
+    // ── FIRE AND FORGET — never block response ────────────────
+
+    // Audit log (non-blocking)
+    writeAudit({
       userId: req.user.id, action: 'ap_bill_created',
       entityType: 'ap_bills', entityId: result.id,
       companyId: result.company_id, newValues: result,
       ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[AP Bills] audit failed:', err.message));
+
+    logger.info('[AP Bills] audit queued (non-blocking)');
+
+    // Finance refresh (non-blocking)
+    setImmediate(() => {
+      queueRefresh(result.project_id, 'ap_bill.create');
+      logger.info('[AP Bills] finance refresh queued (non-blocking)');
     });
 
-    queueRefresh(result.project_id, 'ap_bill.create');
-
+    // ── RESPOND IMMEDIATELY ───────────────────────────────────
+    logger.info(`[AP Bills] response sent in ${Date.now() - startTime}ms`);
     res.status(201).json({ success: true, message: 'Bill created.', data: result });
+
   } catch (error) {
     if (error.message?.startsWith('PO_EXCEEDED')) {
       return res.status(422).json({
@@ -311,30 +319,29 @@ router.put('/:id', async (req, res, next) => {
 
     const result = await query(`
       UPDATE ap_bills SET
-        status         = COALESCE($1, status),
-        notes          = COALESCE($2, notes),
-        due_date       = COALESCE($3, due_date),
-        subtotal       = $4, tax_percent = $5,
-        tax_amount     = $6, total_amount = $7,
-        cfdi_uuid      = COALESCE($8, cfdi_uuid),
-        cfdi_xml_url   = COALESCE($9, cfdi_xml_url),
+        status = COALESCE($1, status), notes = COALESCE($2, notes),
+        due_date = COALESCE($3, due_date),
+        subtotal = $4, tax_percent = $5, tax_amount = $6, total_amount = $7,
+        cfdi_uuid = COALESCE($8, cfdi_uuid),
+        cfdi_xml_url = COALESCE($9, cfdi_xml_url),
         attachment_url = COALESCE($10, attachment_url),
-        updated_at     = NOW()
+        updated_at = NOW()
       WHERE id = $11 RETURNING *
     `, [status || null, notes || null, due_date || null,
         newSubtotal, newTaxPercent, newTaxAmount, newTotalAmount,
         cfdi_uuid || null, cfdi_xml_url || null, attachment_url || null, id]);
 
-    await writeAudit({
+    // Fire and forget
+    writeAudit({
       userId: req.user.id, action: 'ap_bill_updated',
       entityType: 'ap_bills', entityId: id,
       companyId: result.rows[0].company_id,
       oldValues: { subtotal: bill.subtotal, status: bill.status },
       newValues: { subtotal: result.rows[0].subtotal, status: result.rows[0].status },
       ip: req.ip, userAgent: req.get('user-agent')
-    });
+    }).catch(err => logger.error('[AP Bills] audit failed:', err.message));
 
-    queueRefresh(result.rows[0].project_id, 'ap_bill.update');
+    setImmediate(() => queueRefresh(result.rows[0].project_id, 'ap_bill.update'));
 
     res.json({ success: true, message: 'Bill updated.', data: result.rows[0] });
   } catch (error) { next(error); }
@@ -342,6 +349,9 @@ router.put('/:id', async (req, res, next) => {
 
 // ─── POST /api/ap-bills/:id/payments ─────────────────────────
 router.post('/:id/payments', async (req, res, next) => {
+  const startTime = Date.now();
+  logger.info('[AP Bills] POST /:id/payments → request received');
+
   try {
     const id = parseInt(req.params.id);
     const access = await assertBillAccess(id, req.user);
@@ -351,7 +361,6 @@ router.post('/:id/payments', async (req, res, next) => {
       });
     }
 
-    // Only finance/admin can make payments
     if (!['admin','finance','manager'].includes(req.user.role)) {
       return res.status(403).json({
         success: false, error: 'forbidden',
@@ -376,10 +385,11 @@ router.post('/:id/payments', async (req, res, next) => {
     if (amount <= 0) return res.status(400).json({ success: false, error: 'invalid_amount', message: 'Amount must be > 0.' });
     if (amount > outstanding) return res.status(400).json({ success: false, error: 'AP_OVERPAYMENT', message: `Exceeds outstanding: ${outstanding}` });
 
+    logger.info('[AP Bills] payment transaction starting');
+
     // ── ATOMIC TRANSACTION ────────────────────────────────────
     const result = await withTransaction(async (client) => {
 
-      // 1. Insert payment
       const payment = await client.query(`
         INSERT INTO ap_payments (
           bill_id, company_id, project_id,
@@ -391,12 +401,10 @@ router.post('/:id/payments', async (req, res, next) => {
           payment_date, payment_method || null,
           reference || null, notes || null, req.user.id]);
 
-      // 2. Calculate new status
       const newTotalPaid = parseFloat(b.total_paid) + amount;
       const newStatus    = newTotalPaid >= parseFloat(b.total_amount) ? 'paid' : 'partially_paid';
       const paidDate     = newStatus === 'paid' ? payment_date : null;
 
-      // 3. Update bill
       const updatedBill = await client.query(`
         UPDATE ap_bills SET
           total_paid = $1, status = $2,
@@ -405,32 +413,29 @@ router.post('/:id/payments', async (req, res, next) => {
         WHERE id = $4 RETURNING *
       `, [newTotalPaid, newStatus, paidDate, id]);
 
-      // 4. Queue refresh
-      await client.query(`
-        INSERT INTO finance_refresh_queue (project_id, reason)
-        VALUES ($1, 'ap_payment.insert') ON CONFLICT DO NOTHING
-      `, [b.project_id]);
-
       return { payment: payment.rows[0], bill: updatedBill.rows[0] };
     });
     // ── END TRANSACTION ───────────────────────────────────────
 
-    await writeAudit({
+    logger.info(`[AP Bills] payment committed in ${Date.now() - startTime}ms`);
+
+    // Fire and forget
+    writeAudit({
       userId: req.user.id, action: 'ap_payment_registered',
       entityType: 'ap_bills', entityId: id,
       companyId: b.company_id,
-      newValues: {
-        payment_id: result.payment.id,
-        amount, payment_date,
-        bill_status: result.bill.status,
-        outstanding: result.bill.outstanding_balance
-      },
+      newValues: { payment_id: result.payment.id, amount, payment_date, bill_status: result.bill.status },
       ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[AP Bills] audit failed:', err.message));
+
+    setImmediate(() => {
+      queueRefresh(b.project_id, 'ap_payment.insert');
+      logger.info('[AP Bills] finance refresh queued');
     });
 
-    queueRefresh(b.project_id, 'ap_payment.insert');
-
+    logger.info(`[AP Bills] payment response sent in ${Date.now() - startTime}ms`);
     res.status(201).json({ success: true, message: 'Payment registered.', data: result });
+
   } catch (error) {
     if (error.message?.includes('AP_OVERPAYMENT') || error.message?.includes('overpayment')) {
       return res.status(400).json({ success: false, error: 'AP_OVERPAYMENT', message: 'Payment exceeds outstanding balance.' });
@@ -446,10 +451,8 @@ router.post('/mark-overdue', async (req, res, next) => {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions.' });
     }
 
-    const companyFilter = req.user.role !== 'admin'
-      ? `AND company_id = $1` : '';
-    const params = req.user.role !== 'admin'
-      ? [parseInt(req.user.company_id)] : [];
+    const companyFilter = req.user.role !== 'admin' ? `AND company_id = $1` : '';
+    const params = req.user.role !== 'admin' ? [parseInt(req.user.company_id)] : [];
 
     const result = await query(`
       UPDATE ap_bills SET status = 'overdue', updated_at = NOW()
@@ -460,11 +463,10 @@ router.post('/mark-overdue', async (req, res, next) => {
       RETURNING id, vendor_invoice_no, due_date, outstanding_balance, company_id, project_id
     `, params);
 
-    // Queue refresh for affected projects
     const projectIds = [...new Set(result.rows.map(r => r.project_id))];
-    for (const pid of projectIds) {
-      queueRefresh(pid, 'ap_bills.mark_overdue');
-    }
+    setImmediate(() => {
+      projectIds.forEach(pid => queueRefresh(pid, 'ap_bills.mark_overdue'));
+    });
 
     res.json({
       success: true,
