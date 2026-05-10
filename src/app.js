@@ -15,7 +15,6 @@ const swaggerSpec = require('./config/swagger');
 const logger = require('./utils/logger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { generalLimiter } = require('./middleware/rateLimit');
-app.set('trust proxy', 1);
 
 // Routes
 const authRoutes        = require('./routes/auth');
@@ -35,6 +34,7 @@ const reportsRoutes     = require('./routes/reports');
 const filesRoutes       = require('./routes/files');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // ─── Sentry (error monitoring) ────────────────────────────────────────────────
