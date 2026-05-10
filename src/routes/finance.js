@@ -7,36 +7,6 @@ const { verifyToken } = require('../middleware/auth');
 
 router.use(verifyToken);
 
-// ─── HELPER: Build WHERE clause from filters ──────────────────
-function buildFilters(params) {
-  const conditions = [];
-  const values = [];
-  let idx = 1;
-
-  if (params.company_id) {
-    conditions.push(`company_id = $${idx++}`);
-    values.push(parseInt(params.company_id));
-  }
-  if (params.project_id) {
-    conditions.push(`project_id = $${idx++}`);
-    values.push(parseInt(params.project_id));
-  }
-  if (params.date_from) {
-    conditions.push(`flow_date >= $${idx++}`);
-    values.push(params.date_from);
-  }
-  if (params.date_to) {
-    conditions.push(`flow_date <= $${idx++}`);
-    values.push(params.date_to);
-  }
-
-  return {
-    where: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
-    values,
-    nextIdx: idx
-  };
-}
-
 // ─── GET /api/finance/project-financials ─────────────────────
 router.get('/project-financials', async (req, res, next) => {
   try {
@@ -55,11 +25,7 @@ router.get('/project-financials', async (req, res, next) => {
       values
     );
 
-    res.json({
-      success: true,
-      count: result.rows.length,
-      data: result.rows
-    });
+    res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) { next(error); }
 });
 
@@ -137,24 +103,28 @@ router.get('/cash-flow', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
-    if (company_id)   { conditions.push(`company_id = $${idx++}`); values.push(parseInt(company_id)); }
-    if (project_id)   { conditions.push(`project_id = $${idx++}`); values.push(parseInt(project_id)); }
-    if (date_from)    { conditions.push(`flow_date >= $${idx++}`); values.push(date_from); }
-    if (date_to)      { conditions.push(`flow_date <= $${idx++}`); values.push(date_to); }
-    if (is_projected !== undefined) {
+    // FIX: each view has different date column
+    let viewName   = 'cash_flow_view';
+    let dateColumn = 'flow_date';
+
+    if (period === 'weekly')  { viewName = 'cash_flow_weekly';  dateColumn = 'week_start'; }
+    if (period === 'monthly') { viewName = 'cash_flow_monthly'; dateColumn = 'month_start'; }
+
+    if (company_id) { conditions.push(`company_id = $${idx++}`); values.push(parseInt(company_id)); }
+    if (project_id) { conditions.push(`project_id = $${idx++}`); values.push(parseInt(project_id)); }
+    if (date_from)  { conditions.push(`${dateColumn} >= $${idx++}`); values.push(date_from); }
+    if (date_to)    { conditions.push(`${dateColumn} <= $${idx++}`); values.push(date_to); }
+
+    // is_projected only applies to cash_flow_view (not weekly/monthly)
+    if (is_projected !== undefined && !period) {
       conditions.push(`is_projected = $${idx++}`);
       values.push(is_projected === 'true');
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    // Choose view based on period
-    let viewName = 'cash_flow_view';
-    if (period === 'weekly')  viewName = 'cash_flow_weekly';
-    if (period === 'monthly') viewName = 'cash_flow_monthly';
-
     const result = await query(
-      `SELECT * FROM ${viewName} ${where} ORDER BY flow_date ASC`,
+      `SELECT * FROM ${viewName} ${where} ORDER BY ${dateColumn} ASC`,
       values
     );
 
@@ -187,15 +157,16 @@ router.get('/cash-flow-running', async (req, res, next) => {
 });
 
 // ─── GET /api/finance/dashboard ──────────────────────────────
-// Summary KPIs for CFO Dashboard
 router.get('/dashboard', async (req, res, next) => {
   try {
     const { company_id } = req.query;
-    const companyFilter = company_id ? `WHERE owner_company_id = ${parseInt(company_id)}` : '';
-    const companyFilterCR = company_id ? `WHERE company_id = ${parseInt(company_id)}` : '';
+
+    // FIX: use parameterized queries (no string interpolation)
+    const companyParams  = company_id ? [parseInt(company_id)] : [];
+    const companyFilter  = company_id ? 'WHERE owner_company_id = $1' : '';
+    const companyFilterCR = company_id ? 'WHERE company_id = $1' : '';
 
     const [kpis, alerts, poUtilization] = await Promise.all([
-      // Project KPIs
       query(`
         SELECT
           COUNT(*)                            AS total_projects,
@@ -207,42 +178,42 @@ router.get('/dashboard', async (req, res, next) => {
           COALESCE(SUM(outstanding_ap), 0)    AS total_outstanding_ap,
           ROUND(AVG(profit_margin_pct), 2)    AS avg_margin_pct
         FROM project_financials ${companyFilter}
-      `),
+      `, companyParams),
 
-      // Critical alerts
       query(`
         SELECT project_id, project_name, owner_company_name,
           profit_margin_pct, gross_profit, outstanding_ar,
           budget_remaining, po_remaining,
           CASE
-            WHEN profit_margin_pct < 0     THEN 'negative_profit'
-            WHEN profit_margin_pct < 15    THEN 'low_margin'
-            WHEN budget_remaining < 0      THEN 'over_budget'
+            WHEN profit_margin_pct < 0  THEN 'negative_profit'
+            WHEN profit_margin_pct < 15 THEN 'low_margin'
+            WHEN budget_remaining < 0   THEN 'over_budget'
             ELSE 'ok'
           END AS alert_type
-        FROM project_financials ${companyFilter}
-        WHERE profit_margin_pct < 15 OR budget_remaining < 0
+        FROM project_financials
+        ${companyFilter}
+        ${companyFilter ? 'AND' : 'WHERE'} (profit_margin_pct < 15 OR budget_remaining < 0)
         ORDER BY profit_margin_pct ASC NULLS LAST
         LIMIT 10
-      `),
+      `, companyParams),
 
-      // PO utilization alerts
       query(`
         SELECT po_id, po_number, project_name, company_name,
           po_total, invoiced_amount, remaining_amount,
           invoiced_pct, utilization_alert
-        FROM project_po_summary ${companyFilterCR}
-        WHERE utilization_alert IN ('critical','warning')
+        FROM project_po_summary
+        ${companyFilterCR}
+        ${companyFilterCR ? 'AND' : 'WHERE'} utilization_alert IN ('critical','warning')
         ORDER BY invoiced_pct DESC
         LIMIT 10
-      `)
+      `, companyParams)
     ]);
 
     res.json({
       success: true,
       data: {
-        kpis: kpis.rows[0],
-        alerts: alerts.rows,
+        kpis:      kpis.rows[0],
+        alerts:    alerts.rows,
         po_alerts: poUtilization.rows
       }
     });
@@ -250,7 +221,6 @@ router.get('/dashboard', async (req, res, next) => {
 });
 
 // ─── POST /api/finance/refresh ────────────────────────────────
-// Refresh materialized view on demand
 router.post('/refresh', async (req, res, next) => {
   try {
     await query('SELECT refresh_project_financials()');
@@ -258,7 +228,7 @@ router.post('/refresh', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ─── GET /api/finance/mark-overdue ───────────────────────────
+// ─── POST /api/finance/mark-overdue ──────────────────────────
 router.post('/mark-overdue', async (req, res, next) => {
   try {
     await query('SELECT mark_overdue()');
