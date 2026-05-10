@@ -15,6 +15,7 @@ const swaggerSpec = require('./config/swagger');
 const logger = require('./utils/logger');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { generalLimiter } = require('./middleware/rateLimit');
+app.set('trust proxy', 1);
 
 // Routes
 const authRoutes        = require('./routes/auth');
