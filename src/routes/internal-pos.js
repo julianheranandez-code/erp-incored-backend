@@ -18,6 +18,24 @@ const VALID_CATEGORIES = [
   'maintenance','plex_construction','plin_installation','crew_rental'
 ];
 
+// ─── CATEGORY ALIASES (frontend → backend normalization) ──────
+const CATEGORY_ALIASES = {
+  'workforce_plin_installation': 'plin_installation',
+  'workforce_crew_rental':       'crew_rental',
+  'workforce_maintenance':       'maintenance',
+  'workforce_subcontractors':    'subcontractors',
+  'workforce_materials':         'materials',
+  'on_site_support':             'maintenance',
+  'plex':                        'plex_construction',
+  'plin':                        'plin_installation'
+};
+
+function normalizeCategory(raw) {
+  if (!raw) return null;
+  const lower = String(raw).toLowerCase().trim();
+  return CATEGORY_ALIASES[lower] || lower;
+}
+
 // ─── MULTI-COMPANY ISOLATION ──────────────────────────────────
 function getAuthorizedCompanyId(user, requestedCompanyId) {
   if (user.role === 'admin') {
@@ -179,10 +197,14 @@ router.post('/', async (req, res, next) => {
     }
 
     // Category validation
-    if (!VALID_CATEGORIES.includes(category)) {
+    const normalizedCategory = normalizeCategory(category);
+    if (!normalizedCategory || !VALID_CATEGORIES.includes(normalizedCategory)) {
       return res.status(400).json({
         success: false, error: 'invalid_category',
-        message: `Invalid category: "${category}". Valid: ${VALID_CATEGORIES.join(', ')}`
+        message: `Invalid category: "${category}"`,
+        received: category,
+        normalized: normalizedCategory,
+        accepted: VALID_CATEGORIES
       });
     }
 
@@ -213,7 +235,7 @@ router.post('/', async (req, res, next) => {
       `, [
         parseInt(company_id), parseInt(project_id),
         vendor_id ? parseInt(vendor_id) : null,
-        po_number, category,
+        po_number, normalizedCategory,
         currency, parseFloat(exchange_rate),
         parseFloat(subtotal), parseFloat(tax_percent), tax_amount, total_amount,
         issue_date || new Date().toISOString().split('T')[0],
@@ -263,7 +285,7 @@ router.post('/', async (req, res, next) => {
       userId: req.user.id, action: 'internal_po_created',
       entityType: 'internal_purchase_orders', entityId: result.id,
       companyId: result.company_id,
-      newValues: { po_number, category, total_amount },
+      newValues: { po_number, category: normalizedCategory, total_amount },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Internal POs] audit failed:', err.message));
 
@@ -315,10 +337,14 @@ router.put('/:id', async (req, res, next) => {
     } = req.body;
 
     // Validate category if provided
-    if (category && !VALID_CATEGORIES.includes(category)) {
+    const normalizedCategory = category ? normalizeCategory(category) : null;
+    if (normalizedCategory && !VALID_CATEGORIES.includes(normalizedCategory)) {
       return res.status(400).json({
         success: false, error: 'invalid_category',
-        message: `Invalid category: "${category}". Valid: ${VALID_CATEGORIES.join(', ')}`
+        message: `Invalid category: "${category}"`,
+        received: category,
+        normalized: normalizedCategory,
+        accepted: VALID_CATEGORIES
       });
     }
 
@@ -345,7 +371,7 @@ router.put('/:id', async (req, res, next) => {
         WHERE id = $9 RETURNING *
       `, [
         vendor_id ? parseInt(vendor_id) : null,
-        category || null,
+        normalizedCategory || null,
         newSubtotal, newTaxPercent, newTaxAmount, newTotalAmount,
         expected_delivery_date || null, notes || null, id
       ]);
