@@ -4,10 +4,19 @@ const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
-const { auditInvoiceCreated, writeAudit } = require('../middleware/audit');
-const { queueRefresh, afterMutation } = require('../services/financeRefresh');
+const { writeAudit } = require('../middleware/audit');
+const { queueRefresh } = require('../services/financeRefresh');
+const logger = require('../utils/logger');
 
 router.use(verifyToken);
+
+// ─── VALID CATEGORIES ─────────────────────────────────────────
+const VALID_CATEGORIES = [
+  'materials','subcontractors','logistics','equipment',
+  'tools','fuel','rentals','permits','services',
+  'transport','hotel','other',
+  'maintenance','plex_construction','plin_installation','crew_rental'
+];
 
 // ─── MULTI-COMPANY ISOLATION ──────────────────────────────────
 function getAuthorizedCompanyId(user, requestedCompanyId) {
@@ -54,8 +63,7 @@ router.get('/', async (req, res, next) => {
 
     const [pos, summary, total] = await Promise.all([
       query(`
-        SELECT
-          p.*,
+        SELECT p.*,
           v.name AS vendor_name,
           pr.name AS project_name, pr.code AS project_code,
           co.name AS company_name,
@@ -79,8 +87,7 @@ router.get('/', async (req, res, next) => {
           COALESCE(SUM(total_amount) FILTER (WHERE status = 'approved'), 0) AS total_approved,
           COALESCE(SUM(total_amount) FILTER (WHERE status = 'draft'), 0) AS total_draft,
           COALESCE(SUM(total_amount) FILTER (WHERE status = 'pending_approval'), 0) AS total_pending
-        FROM internal_purchase_orders p
-        ${where}
+        FROM internal_purchase_orders p ${where}
       `, values),
 
       query(`SELECT COUNT(*) AS total FROM internal_purchase_orders p ${where}`, values)
@@ -102,6 +109,11 @@ router.get('/', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── GET /api/internal-pos/categories ────────────────────────
+router.get('/categories', async (req, res) => {
+  res.json({ success: true, data: VALID_CATEGORIES });
+});
+
 // ─── GET /api/internal-pos/:id ────────────────────────────────
 router.get('/:id', async (req, res, next) => {
   try {
@@ -115,8 +127,7 @@ router.get('/:id', async (req, res, next) => {
 
     const [po, items] = await Promise.all([
       query(`
-        SELECT
-          p.*,
+        SELECT p.*,
           v.name AS vendor_name, v.rfc AS vendor_rfc,
           pr.name AS project_name, pr.code AS project_code,
           co.name AS company_name, co.short_code AS company_code,
@@ -130,22 +141,18 @@ router.get('/:id', async (req, res, next) => {
         LEFT JOIN users ua     ON ua.id = p.approved_by
         WHERE p.id = $1
       `, [id]),
-      query(`
-        SELECT * FROM internal_purchase_order_items
-        WHERE internal_po_id = $1
-        ORDER BY line_order ASC
-      `, [id])
+      query('SELECT * FROM internal_purchase_order_items WHERE internal_po_id = $1 ORDER BY line_order ASC', [id])
     ]);
 
-    res.json({
-      success: true,
-      data: { purchase_order: po.rows[0], items: items.rows }
-    });
+    res.json({ success: true, data: { purchase_order: po.rows[0], items: items.rows } });
   } catch (error) { next(error); }
 });
 
 // ─── POST /api/internal-pos ───────────────────────────────────
 router.post('/', async (req, res, next) => {
+  const startTime = Date.now();
+  logger.info('[Internal POs] POST / → request received');
+
   try {
     const {
       company_id, project_id, vendor_id, po_number, category,
@@ -155,14 +162,31 @@ router.post('/', async (req, res, next) => {
       items = []
     } = req.body;
 
-    if (!company_id || !project_id || !po_number || !category || !subtotal) {
+    // Detailed field validation
+    const missing = [];
+    if (!company_id) missing.push('company_id');
+    if (!project_id) missing.push('project_id');
+    if (!po_number)  missing.push('po_number');
+    if (!category)   missing.push('category');
+    if (!subtotal)   missing.push('subtotal');
+
+    if (missing.length > 0) {
       return res.status(400).json({
         success: false, error: 'validation_error',
-        message: 'Required: company_id, project_id, po_number, category, subtotal'
+        message: `Missing required fields: ${missing.join(', ')}`,
+        missing_fields: missing
       });
     }
 
-    // Multi-company isolation
+    // Category validation
+    if (!VALID_CATEGORIES.includes(category)) {
+      return res.status(400).json({
+        success: false, error: 'invalid_category',
+        message: `Invalid category: "${category}". Valid: ${VALID_CATEGORIES.join(', ')}`
+      });
+    }
+
+    // Company isolation
     if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
       return res.status(403).json({
         success: false, error: 'forbidden',
@@ -172,7 +196,8 @@ router.post('/', async (req, res, next) => {
 
     const tax_amount   = parseFloat(subtotal) * (parseFloat(tax_percent) / 100);
     const total_amount = parseFloat(subtotal) + tax_amount;
-    const created_by   = req.user.id;
+
+    logger.info('[Internal POs] transaction starting');
 
     const result = await withTransaction(async (client) => {
       // 1. Create PO
@@ -193,24 +218,36 @@ router.post('/', async (req, res, next) => {
         parseFloat(subtotal), parseFloat(tax_percent), tax_amount, total_amount,
         issue_date || new Date().toISOString().split('T')[0],
         expected_delivery_date || null, notes || null,
-        created_by
+        req.user.id
       ]);
 
-      // 2. Insert line items if provided
+      logger.info(`[Internal POs] PO inserted id=${po.rows[0].id}`);
+
+      // 2. Insert line items — handle frontend sending total or unit_cost
       if (items.length > 0) {
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
-          const itemTotal = parseFloat(item.quantity) * parseFloat(item.unit_cost);
+          const qty      = parseFloat(item.quantity || 1);
+          const unitCost = parseFloat(item.unit_cost || item.unit_price || 0);
+          const itemTotal = parseFloat(item.total || item.total_cost || (qty * unitCost));
           await client.query(`
             INSERT INTO internal_purchase_order_items
               (internal_po_id, description, quantity, unit, unit_cost, total_cost, line_order)
             VALUES ($1,$2,$3,$4,$5,$6,$7)
-          `, [po.rows[0].id, item.description, item.quantity, item.unit || null,
-              item.unit_cost, itemTotal, i + 1]);
+          `, [
+            po.rows[0].id,
+            item.description || 'Item',
+            qty,
+            item.unit || null,
+            unitCost,
+            itemTotal,
+            i + 1
+          ]);
         }
+        logger.info(`[Internal POs] ${items.length} items inserted`);
       }
 
-      // 3. Queue finance refresh
+      // 3. Queue finance refresh (lightweight)
       await client.query(`
         INSERT INTO finance_refresh_queue (project_id, reason)
         VALUES ($1, 'internal_po.create') ON CONFLICT DO NOTHING
@@ -219,25 +256,34 @@ router.post('/', async (req, res, next) => {
       return po.rows[0];
     });
 
-    // Audit log
-    await writeAudit({
+    logger.info(`[Internal POs] committed in ${Date.now() - startTime}ms`);
+
+    // Fire and forget — never block response
+    writeAudit({
       userId: req.user.id, action: 'internal_po_created',
       entityType: 'internal_purchase_orders', entityId: result.id,
-      companyId: result.company_id, newValues: result,
+      companyId: result.company_id,
+      newValues: { po_number, category, total_amount },
       ip: req.ip, userAgent: req.get('user-agent')
-    });
+    }).catch(err => logger.error('[Internal POs] audit failed:', err.message));
 
-    // Background refresh
-    queueRefresh(result.project_id, 'internal_po.create');
+    setImmediate(() => queueRefresh(result.project_id, 'internal_po.create'));
 
-    res.status(201).json({
-      success: true, message: 'Purchase order created.', data: result
-    });
+    logger.info(`[Internal POs] response sent in ${Date.now() - startTime}ms`);
+    res.status(201).json({ success: true, message: 'Purchase order created.', data: result });
+
   } catch (error) {
+    logger.error('[Internal POs] POST error:', { message: error.message, code: error.code });
     if (error.code === '23505') {
       return res.status(409).json({
         success: false, error: 'duplicate_po_number',
-        message: 'PO number already exists for this company.'
+        message: `PO number "${req.body.po_number}" already exists for this company.`
+      });
+    }
+    if (error.code === '23514') {
+      return res.status(400).json({
+        success: false, error: 'constraint_violation',
+        message: `Invalid value: ${error.message}`
       });
     }
     next(error);
@@ -268,6 +314,14 @@ router.put('/:id', async (req, res, next) => {
       expected_delivery_date, notes, items
     } = req.body;
 
+    // Validate category if provided
+    if (category && !VALID_CATEGORIES.includes(category)) {
+      return res.status(400).json({
+        success: false, error: 'invalid_category',
+        message: `Invalid category: "${category}". Valid: ${VALID_CATEGORIES.join(', ')}`
+      });
+    }
+
     const existing = await query('SELECT * FROM internal_purchase_orders WHERE id = $1', [id]);
     const po = existing.rows[0];
 
@@ -296,35 +350,34 @@ router.put('/:id', async (req, res, next) => {
         expected_delivery_date || null, notes || null, id
       ]);
 
-      // Update items if provided
       if (items && items.length > 0) {
         await client.query('DELETE FROM internal_purchase_order_items WHERE internal_po_id = $1', [id]);
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
-          const itemTotal = parseFloat(item.quantity) * parseFloat(item.unit_cost);
+          const qty      = parseFloat(item.quantity || 1);
+          const unitCost = parseFloat(item.unit_cost || item.unit_price || 0);
+          const itemTotal = parseFloat(item.total || item.total_cost || (qty * unitCost));
           await client.query(`
             INSERT INTO internal_purchase_order_items
               (internal_po_id, description, quantity, unit, unit_cost, total_cost, line_order)
             VALUES ($1,$2,$3,$4,$5,$6,$7)
-          `, [id, item.description, item.quantity, item.unit || null,
-              item.unit_cost, itemTotal, i + 1]);
+          `, [id, item.description || 'Item', qty, item.unit || null, unitCost, itemTotal, i + 1]);
         }
       }
 
       return updated.rows[0];
     });
 
-    // Audit
-    await writeAudit({
+    writeAudit({
       userId: req.user.id, action: 'internal_po_updated',
       entityType: 'internal_purchase_orders', entityId: id,
       companyId: result.company_id,
-      oldValues: { subtotal: po.subtotal, total_amount: po.total_amount, status: po.status },
+      oldValues: { subtotal: po.subtotal, total_amount: po.total_amount },
       newValues: { subtotal: result.subtotal, total_amount: result.total_amount },
       ip: req.ip, userAgent: req.get('user-agent')
-    });
+    }).catch(err => logger.error('[Internal POs] audit failed:', err.message));
 
-    queueRefresh(result.project_id, 'internal_po.update');
+    setImmediate(() => queueRefresh(result.project_id, 'internal_po.update'));
 
     res.json({ success: true, message: 'Purchase order updated.', data: result });
   } catch (error) { next(error); }
@@ -335,7 +388,6 @@ router.post('/:id/approve', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
 
-    // Only admin, manager, finance can approve
     if (!['admin','manager','finance','director'].includes(req.user.role)) {
       return res.status(403).json({
         success: false, error: 'forbidden',
@@ -367,27 +419,19 @@ router.post('/:id/approve', async (req, res, next) => {
         approved_amount = COALESCE($2, total_amount),
         notes           = COALESCE($3, notes),
         updated_at      = NOW()
-      WHERE id = $4
-      RETURNING *
-    `, [
-      req.user.id,
-      approved_amount ? parseFloat(approved_amount) : null,
-      notes || null,
-      id
-    ]);
+      WHERE id = $4 RETURNING *
+    `, [req.user.id, approved_amount ? parseFloat(approved_amount) : null, notes || null, id]);
 
-    // Audit
-    await writeAudit({
+    writeAudit({
       userId: req.user.id, action: 'internal_po_approved',
       entityType: 'internal_purchase_orders', entityId: id,
       companyId: result.rows[0].company_id,
       oldValues: { status: 'pending_approval' },
-      newValues: { status: 'approved', approved_by: req.user.id, approved_amount: result.rows[0].approved_amount },
+      newValues: { status: 'approved', approved_amount: result.rows[0].approved_amount },
       ip: req.ip, userAgent: req.get('user-agent')
-    });
+    }).catch(err => logger.error('[Internal POs] audit failed:', err.message));
 
-    // Refresh — approved POs affect committed costs
-    queueRefresh(result.rows[0].project_id, 'internal_po.approve');
+    setImmediate(() => queueRefresh(result.rows[0].project_id, 'internal_po.approve'));
 
     res.json({ success: true, message: 'Purchase order approved.', data: result.rows[0] });
   } catch (error) { next(error); }
