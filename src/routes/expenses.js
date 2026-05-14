@@ -9,7 +9,6 @@ const { queueRefresh } = require('../services/financeRefresh');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
-console.log('[Expenses] v2 loaded - fleet_gasolina alias active');
 
 // ─── VALID CATEGORIES ─────────────────────────────────────────
 const VALID_CATEGORIES = [
@@ -28,41 +27,101 @@ const VALID_CATEGORIES = [
 
 // ─── CATEGORY ALIASES (frontend → normalized) ─────────────────
 const CATEGORY_ALIASES = {
-  // Fleet aliases
+  // Fleet
   'fleet_gasolina':      'fuel',
   'fleet_diesel':        'fuel',
+  'fleet_fuel':          'fuel',
+  'fleet_gas':           'fuel',
   'fleet_tolls':         'tolls',
+  'fleet_casetas':       'tolls',
+  'fleet_parking':       'parking',
   'fleet_maintenance':   'vehicle_maintenance',
-  // Field aliases
-  'lodging':             'hotels',
+  'fleet_service':       'vehicle_maintenance',
+  'fleet_repair':        'vehicle_maintenance',
+  'fleet_fines':         'vehicle_fines',
+  'fleet_registration':  'vehicle_registration',
+  // Field (Spanish)
+  'viaticos':            'per_diem',
+  'hospedaje':           'hotels',
   'hotel':               'hotels',
+  'lodging':             'hotels',
+  'comidas':             'meals',
   'meal':                'meals',
   'food':                'meals',
+  'vuelos':              'flights',
+  'casetas':             'tolls',
   'toll':                'tolls',
+  'subcontractors':      'subcontractor_incidentals',
+  'subcontractor':       'subcontractor_incidentals',
+  // Tools & Materials (Spanish)
+  'materiales':          'small_materials',
+  'materials':           'small_materials',
+  'seguridad':           'safety_equipment',
+  'safety':              'safety_equipment',
+  'fibra':               'fiber_material',
+  'fiber':               'fiber_material',
+  'network':             'network_equipment',
+  'consumable':          'consumables',
+  // Admin (Spanish)
+  'office':              'office_supplies',
+  'internet':            'internet_services',
+  // General (Spanish)
+  'emergencia':          'emergency_repair',
+  'repair':              'emergency_repair',
+  'cuadrilla':           'crew_rental',
+  'crew':                'crew_rental',
+  'restoration_work':    'restoration',
   'gas':                 'fuel',
   'gasoline':            'fuel',
   'diesel':              'fuel',
-  'transport':           'fuel',
-  'subcontractors':      'subcontractor_incidentals',
-  'safety':              'safety_equipment',
-  // Tools & Materials
-  'materials':           'small_materials',
-  'consumable':          'consumables',
-  'fiber':               'fiber_material',
-  'network':             'network_equipment',
-  // Admin
-  'office':              'office_supplies',
-  'internet':            'internet_services',
-  // General
-  'crew':                'crew_rental',
-  'repair':              'emergency_repair',
-  'restoration_work':    'restoration'
+  'transport':           'fuel'
+};
+
+// PREFIX MAPS — fleet_* / field_* / tools_* / admin_* normalization
+const PREFIX_MAPS = {
+  'fleet_':  { default: 'fuel',
+    'gasolina':'fuel', 'diesel':'fuel', 'fuel':'fuel', 'gas':'fuel',
+    'tolls':'tolls', 'casetas':'tolls', 'parking':'parking',
+    'maintenance':'vehicle_maintenance', 'service':'vehicle_maintenance',
+    'repair':'vehicle_maintenance', 'fines':'vehicle_fines',
+    'registration':'vehicle_registration'
+  },
+  'field_':  { default: 'other',
+    'meals':'meals', 'comidas':'meals', 'food':'meals',
+    'hotels':'hotels', 'hospedaje':'hotels', 'lodging':'hotels',
+    'per_diem':'per_diem', 'viaticos':'per_diem',
+    'flights':'flights', 'vuelos':'flights',
+    'permits':'permits', 'tolls':'tolls'
+  },
+  'tools_':  { default: 'tools',
+    'tools':'tools', 'materials':'small_materials', 'materiales':'small_materials',
+    'safety':'safety_equipment', 'seguridad':'safety_equipment',
+    'fiber':'fiber_material', 'fibra':'fiber_material',
+    'network':'network_equipment', 'consumables':'consumables'
+  },
+  'admin_':  { default: 'office_supplies',
+    'office':'office_supplies', 'internet':'internet_services',
+    'phone':'phone', 'software':'software'
+  }
 };
 
 function normalizeCategory(raw) {
   if (!raw) return null;
   const lower = String(raw).toLowerCase().trim();
-  return CATEGORY_ALIASES[lower] || lower;
+
+  // 1. Direct alias match
+  if (CATEGORY_ALIASES[lower]) return CATEGORY_ALIASES[lower];
+
+  // 2. Prefix-aware normalization (fleet_*, field_*, tools_*, admin_*)
+  for (const [prefix, map] of Object.entries(PREFIX_MAPS)) {
+    if (lower.startsWith(prefix)) {
+      const suffix = lower.slice(prefix.length);
+      return map[suffix] || map['default'] || 'other';
+    }
+  }
+
+  // 3. Return as-is (may pass or fail validation)
+  return lower;
 }
 
 // ─── ISOLATION HELPERS ────────────────────────────────────────
