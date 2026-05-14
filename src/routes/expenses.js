@@ -12,24 +12,50 @@ router.use(verifyToken);
 
 // ─── VALID CATEGORIES ─────────────────────────────────────────
 const VALID_CATEGORIES = [
-  'fuel','tolls','meals','hotels','rentals',
-  'subcontractor_incidentals','tools','small_materials',
-  'vehicle_maintenance','vehicle_fines','vehicle_registration',
-  'flights','per_diem','parking','office_supplies','permits',
-  'safety_equipment','internet_services','temporary_labor','petty_cash',
+  // Fleet
+  'fuel','tolls','vehicle_maintenance','vehicle_fines','vehicle_registration',
+  // Field operations
+  'meals','hotels','rentals','permits','subcontractor_incidentals',
+  'restoration','emergency_repair','temporary_labor','per_diem','flights','parking',
+  // Tools & Materials
+  'tools','small_materials','safety_equipment','consumables','fiber_material','network_equipment',
+  // Admin
+  'office_supplies','internet_services','phone','software','petty_cash',
+  // General
   'crew_rental','maintenance','other'
 ];
 
-// ─── CATEGORY ALIASES ─────────────────────────────────────────
+// ─── CATEGORY ALIASES (frontend → normalized) ─────────────────
 const CATEGORY_ALIASES = {
-  'hotel': 'hotels',
-  'meal':  'meals',
-  'toll':  'tolls',
-  'gas':   'fuel',
-  'gasoline': 'fuel',
-  'lodging':  'hotels',
-  'food':     'meals',
-  'transport':'fuel'
+  // Fleet aliases
+  'fleet_gasolina':      'fuel',
+  'fleet_diesel':        'fuel',
+  'fleet_tolls':         'tolls',
+  'fleet_maintenance':   'vehicle_maintenance',
+  // Field aliases
+  'lodging':             'hotels',
+  'hotel':               'hotels',
+  'meal':                'meals',
+  'food':                'meals',
+  'toll':                'tolls',
+  'gas':                 'fuel',
+  'gasoline':            'fuel',
+  'diesel':              'fuel',
+  'transport':           'fuel',
+  'subcontractors':      'subcontractor_incidentals',
+  'safety':              'safety_equipment',
+  // Tools & Materials
+  'materials':           'small_materials',
+  'consumable':          'consumables',
+  'fiber':               'fiber_material',
+  'network':             'network_equipment',
+  // Admin
+  'office':              'office_supplies',
+  'internet':            'internet_services',
+  // General
+  'crew':                'crew_rental',
+  'repair':              'emergency_repair',
+  'restoration_work':    'restoration'
 };
 
 function normalizeCategory(raw) {
