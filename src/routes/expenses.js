@@ -10,107 +10,105 @@ const logger = require('../utils/logger');
 
 router.use(verifyToken);
 
-// ─── HELPERS ─────────────────────────────────────────────────
+// ─── VALID CATEGORIES ─────────────────────────────────────────
+const VALID_CATEGORIES = [
+  'fuel','tolls','meals','hotels','rentals',
+  'subcontractor_incidentals','tools','small_materials',
+  'vehicle_maintenance','vehicle_fines','vehicle_registration',
+  'flights','per_diem','parking','office_supplies','permits',
+  'safety_equipment','internet_services','temporary_labor','petty_cash',
+  'crew_rental','maintenance','other'
+];
+
+// ─── CATEGORY ALIASES ─────────────────────────────────────────
+const CATEGORY_ALIASES = {
+  'hotel': 'hotels',
+  'meal':  'meals',
+  'toll':  'tolls',
+  'gas':   'fuel',
+  'gasoline': 'fuel',
+  'lodging':  'hotels',
+  'food':     'meals',
+  'transport':'fuel'
+};
+
+function normalizeCategory(raw) {
+  if (!raw) return null;
+  const lower = String(raw).toLowerCase().trim();
+  return CATEGORY_ALIASES[lower] || lower;
+}
+
+// ─── ISOLATION HELPERS ────────────────────────────────────────
 function getAuthorizedCompanyId(user, requestedCompanyId) {
   if (user.role === 'admin') return requestedCompanyId ? parseInt(requestedCompanyId) : null;
   return parseInt(user.company_id);
 }
 
-async function assertReportAccess(reportId, user) {
-  const result = await query(
-    'SELECT id, company_id, employee_id, project_id, status FROM expense_reports WHERE id = $1',
-    [reportId]
-  );
-  if (!result.rows[0]) return { error: 'not_found', message: 'Expense report not found.' };
-  if (user.role !== 'admin' && result.rows[0].company_id !== parseInt(user.company_id)) {
-    return { error: 'forbidden', message: 'Access denied to this expense report.' };
-  }
-  return { report: result.rows[0] };
-}
+// ─── GET /api/expenses/categories ────────────────────────────
+router.get('/categories', async (req, res) => {
+  res.json({ success: true, data: VALID_CATEGORIES });
+});
 
 // ─── GET /api/expenses ────────────────────────────────────────
 router.get('/', async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, sort = 'created_at', order = 'DESC',
-            project_id, status, employee_id, date_from, date_to } = req.query;
+    const { page = 1, limit = 20, sort = 'expense_date', order = 'DESC',
+            project_id, status, employee_id, category, date_from, date_to } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
-
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
     const conditions = [];
     const values = [];
     let idx = 1;
 
-    if (authorizedCompanyId) { conditions.push(`r.company_id = $${idx++}`); values.push(authorizedCompanyId); }
-    if (project_id)          { conditions.push(`r.project_id = $${idx++}`); values.push(parseInt(project_id)); }
-    if (status)              { conditions.push(`r.status = $${idx++}`);     values.push(status); }
-    if (employee_id)         { conditions.push(`r.employee_id = $${idx++}`); values.push(parseInt(employee_id)); }
-    if (date_from)           { conditions.push(`r.created_at >= $${idx++}`); values.push(date_from); }
-    if (date_to)             { conditions.push(`r.created_at <= $${idx++}`); values.push(date_to); }
+    if (authorizedCompanyId) { conditions.push(`e.company_id = $${idx++}`); values.push(authorizedCompanyId); }
+    if (project_id)          { conditions.push(`e.project_id = $${idx++}`); values.push(parseInt(project_id)); }
+    if (status)              { conditions.push(`e.status = $${idx++}`);     values.push(status); }
+    if (employee_id)         { conditions.push(`e.employee_id = $${idx++}`); values.push(parseInt(employee_id)); }
+    if (category)            { conditions.push(`e.category = $${idx++}`);   values.push(category); }
+    if (date_from)           { conditions.push(`e.expense_date >= $${idx++}`); values.push(date_from); }
+    if (date_to)             { conditions.push(`e.expense_date <= $${idx++}`); values.push(date_to); }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const validSorts = ['created_at','total_amount','status'];
-    const sortField = validSorts.includes(sort) ? sort : 'created_at';
+    const validSorts = ['expense_date','amount','status','category','created_at'];
+    const sortField = validSorts.includes(sort) ? sort : 'expense_date';
     const sortOrder = order === 'ASC' ? 'ASC' : 'DESC';
 
-    const [reports, summary, alerts, total] = await Promise.all([
-
+    const [expenses, summary, total] = await Promise.all([
       query(`
-        SELECT r.*,
-          e.name AS employee_name,
+        SELECT e.*,
+          emp.name AS employee_name,
           p.name AS project_name, p.code AS project_code,
-          co.name AS company_name
-        FROM expense_reports r
-        LEFT JOIN employees e  ON e.id = r.employee_id
-        LEFT JOIN projects p   ON p.id = r.project_id
-        LEFT JOIN companies co ON co.id = r.company_id
+          co.name AS company_name,
+          CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+        FROM expenses e
+        LEFT JOIN employees emp ON emp.id = e.employee_id
+        LEFT JOIN projects p    ON p.id = e.project_id
+        LEFT JOIN companies co  ON co.id = e.company_id
+        LEFT JOIN users u       ON u.id = e.created_by
         ${where}
-        ORDER BY r.${sortField} ${sortOrder}
-        LIMIT $${idx} OFFSET $${idx + 1}
+        ORDER BY e.${sortField} ${sortOrder}
+        LIMIT $${idx} OFFSET $${idx+1}
       `, [...values, parseInt(limit), offset]),
 
-      // Summary
       query(`
         SELECT
-          COUNT(*) AS total_reports,
-          COALESCE(SUM(total_amount), 0) AS total_submitted,
-          COALESCE(SUM(total_approved), 0) AS total_approved,
-          COALESCE(SUM(total_paid), 0) AS total_reimbursed,
-          COALESCE(SUM(total_approved - total_paid), 0) AS pending_reimbursement
-        FROM expense_reports r ${where}
+          COUNT(*) AS total_expenses,
+          COALESCE(SUM(amount), 0) AS total_amount,
+          COALESCE(SUM(amount) FILTER (WHERE status = 'reimbursed'), 0) AS total_reimbursed,
+          COALESCE(SUM(amount) FILTER (WHERE status IN ('submitted','ops_approved','pm_approved','finance_approved')), 0) AS pending_reimbursement,
+          COALESCE(SUM(amount) FILTER (WHERE reimbursable = TRUE AND status NOT IN ('reimbursed','rejected','cancelled')), 0) AS total_reimbursable
+        FROM expenses e ${where}
       `, values),
 
-      // Alerts
-      query(`
-        SELECT r.id, r.title, r.total_amount, r.status,
-          e.name AS employee_name, p.name AS project_name,
-          CASE
-            WHEN r.total_amount > 50000 THEN 'large_expense'
-            WHEN r.status IN ('finance_approved') AND r.total_paid = 0
-              AND r.finance_approved_at < NOW() - INTERVAL '7 days' THEN 'overdue_reimbursement'
-            ELSE NULL
-          END AS alert_type
-        FROM expense_reports r
-        LEFT JOIN employees e ON e.id = r.employee_id
-        LEFT JOIN projects p  ON p.id = r.project_id
-        ${where}
-        HAVING CASE
-            WHEN r.total_amount > 50000 THEN 'large_expense'
-            WHEN r.status IN ('finance_approved') AND r.total_paid = 0
-              AND r.finance_approved_at < NOW() - INTERVAL '7 days' THEN 'overdue_reimbursement'
-            ELSE NULL
-          END IS NOT NULL
-        LIMIT 10
-      `, values).catch(() => ({ rows: [] })),
-
-      query(`SELECT COUNT(*) AS total FROM expense_reports r ${where}`, values)
+      query(`SELECT COUNT(*) AS total FROM expenses e ${where}`, values)
     ]);
 
     res.json({
       success: true,
       data: {
-        reports: reports.rows,
+        expenses: expenses.rows,
         summary: summary.rows[0],
-        alerts: alerts.rows || [],
         pagination: {
           total: parseInt(total.rows[0].total),
           page: parseInt(page),
@@ -122,69 +120,39 @@ router.get('/', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ─── GET /api/expenses/categories ────────────────────────────
-router.get('/categories', async (req, res, next) => {
-  try {
-    const result = await query(
-      'SELECT * FROM expense_categories WHERE is_active = TRUE ORDER BY name ASC'
-    );
-    res.json({ success: true, data: result.rows });
-  } catch (error) { next(error); }
-});
-
 // ─── GET /api/expenses/:id ────────────────────────────────────
 router.get('/:id', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
+    const result = await query(`
+      SELECT e.*,
+        emp.name AS employee_name,
+        p.name AS project_name, p.code AS project_code,
+        co.name AS company_name, co.short_code AS company_code,
+        CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+      FROM expenses e
+      LEFT JOIN employees emp ON emp.id = e.employee_id
+      LEFT JOIN projects p    ON p.id = e.project_id
+      LEFT JOIN companies co  ON co.id = e.company_id
+      LEFT JOIN users u       ON u.id = e.created_by
+      WHERE e.id = $1
+    `, [id]);
+
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
+
+    // Company isolation
+    if (req.user.role !== 'admin' && result.rows[0].company_id !== parseInt(req.user.company_id)) {
+      return res.status(403).json({ success: false, error: 'forbidden' });
     }
 
-    const [report, items, attachments, approvals, reimbursements] = await Promise.all([
-      query(`
-        SELECT r.*,
-          e.name AS employee_name, e.company_id AS employee_company_id,
-          p.name AS project_name, p.code AS project_code,
-          co.name AS company_name, co.short_code AS company_code
-        FROM expense_reports r
-        LEFT JOIN employees e  ON e.id = r.employee_id
-        LEFT JOIN projects p   ON p.id = r.project_id
-        LEFT JOIN companies co ON co.id = r.company_id
-        WHERE r.id = $1
-      `, [id]),
-      query(`
-        SELECT i.*, ec.name AS category_name
-        FROM expense_items i
-        LEFT JOIN expense_categories ec ON ec.code = i.category_code
-        WHERE i.report_id = $1 ORDER BY i.expense_date ASC
-      `, [id]),
-      query('SELECT * FROM expense_attachments WHERE report_id = $1 ORDER BY created_at DESC', [id]),
-      query(`
-        SELECT ea.*, CONCAT(u.first_name,' ',u.last_name) AS approved_by_name
-        FROM expense_approvals ea
-        LEFT JOIN users u ON u.id = ea.approved_by
-        WHERE ea.report_id = $1 ORDER BY ea.level ASC
-      `, [id]),
-      query('SELECT * FROM expense_reimbursements WHERE report_id = $1 ORDER BY created_at DESC', [id])
-    ]);
-
-    res.json({
-      success: true,
-      data: {
-        report: report.rows[0],
-        items: items.rows,
-        attachments: attachments.rows,
-        approvals: approvals.rows,
-        reimbursements: reimbursements.rows
-      }
-    });
+    res.json({ success: true, data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
 // ─── POST /api/expenses ───────────────────────────────────────
+// Supports BOTH:
+// 1. Single operational expense (fast field capture)
+// 2. Full expense report (future)
 router.post('/', async (req, res, next) => {
   const startTime = Date.now();
   logger.info('[Expenses] POST / → request received');
@@ -192,290 +160,148 @@ router.post('/', async (req, res, next) => {
   try {
     const {
       company_id, project_id, employee_id,
-      title, currency = 'MXN',
-      period_start, period_end, notes,
-      items = []
+      category, description, amount,
+      currency = 'MXN', exchange_rate = 1,
+      expense_date, tax_amount = 0,
+      reimbursable = true,
+      attachment_url, receipt_url, cfdi_uuid, notes,
+      // Legacy report fields (optional — backward compat)
+      title, period_start, period_end
     } = req.body;
 
-    if (!company_id || !project_id || !employee_id || !title || !period_start || !period_end) {
+    // Minimal required fields for single expense
+    const missing = [];
+    if (!company_id)  missing.push('company_id');
+    if (!employee_id) missing.push('employee_id');
+    if (!category)    missing.push('category');
+    if (!description) missing.push('description');
+    if (!amount)      missing.push('amount');
+
+    if (missing.length > 0) {
       return res.status(400).json({
         success: false, error: 'validation_error',
-        message: 'Required: company_id, project_id, employee_id, title, period_start, period_end'
+        message: `Missing required fields: ${missing.join(', ')}`,
+        missing_fields: missing,
+        note: 'project_id is optional for non-project operational expenses'
       });
     }
 
+    // Normalize + validate category
+    const normalizedCategory = normalizeCategory(category);
+    if (!normalizedCategory || !VALID_CATEGORIES.includes(normalizedCategory)) {
+      return res.status(400).json({
+        success: false, error: 'invalid_category',
+        message: `Invalid category: "${category}"`,
+        received: category,
+        normalized: normalizedCategory,
+        accepted: VALID_CATEGORIES
+      });
+    }
+
+    // Company isolation
     if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Company access denied.' });
     }
 
-    // Calculate total from items
-    const total_amount = items.reduce((sum, item) =>
-      sum + (parseFloat(item.quantity || 1) * parseFloat(item.amount || 0)), 0);
+    logger.info('[Expenses] inserting single expense');
 
-    logger.info('[Expenses] transaction starting');
+    const result = await query(`
+      INSERT INTO expenses (
+        company_id, project_id, employee_id,
+        category, description, amount, tax_amount,
+        currency, exchange_rate, expense_date,
+        reimbursable, attachment_url, receipt_url, cfdi_uuid, notes,
+        status, created_by
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'draft',$16)
+      RETURNING *
+    `, [
+      parseInt(company_id),
+      project_id ? parseInt(project_id) : null,
+      parseInt(employee_id),
+      normalizedCategory, description,
+      parseFloat(amount), parseFloat(tax_amount),
+      currency, parseFloat(exchange_rate),
+      expense_date || new Date().toISOString().split('T')[0],
+      reimbursable,
+      attachment_url || null, receipt_url || null,
+      cfdi_uuid || null, notes || null,
+      req.user.id
+    ]);
 
-    const result = await withTransaction(async (client) => {
-
-      // 1. Create report
-      const report = await client.query(`
-        INSERT INTO expense_reports (
-          company_id, project_id, employee_id,
-          title, currency, total_amount,
-          period_start, period_end, notes,
-          status, created_at, updated_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',NOW(),NOW())
-        RETURNING *
-      `, [parseInt(company_id), parseInt(project_id), parseInt(employee_id),
-          title, currency, total_amount,
-          period_start, period_end, notes || null]);
-
-      logger.info(`[Expenses] report inserted id=${report.rows[0].id}`);
-
-      // 2. Insert items
-      if (items.length > 0) {
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          await client.query(`
-            INSERT INTO expense_items (
-              report_id, category, category_code, description,
-              amount, currency, exchange_rate, expense_date,
-              receipt_url, cfdi_uuid
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-          `, [
-            report.rows[0].id,
-            item.category || item.category_code || 'other',
-            item.category_code || item.category || 'other',
-            item.description,
-            parseFloat(item.amount),
-            item.currency || currency,
-            parseFloat(item.exchange_rate || 1),
-            item.expense_date || period_start,
-            item.receipt_url || null,
-            item.cfdi_uuid || null
-          ]);
-        }
-        logger.info(`[Expenses] ${items.length} items inserted`);
-      }
-
-      return report.rows[0];
-    });
-
-    logger.info(`[Expenses] transaction committed in ${Date.now() - startTime}ms`);
+    logger.info(`[Expenses] inserted id=${result.rows[0].id} in ${Date.now()-startTime}ms`);
 
     // Fire and forget
     writeAudit({
-      userId: req.user.id, action: 'expense_report_created',
-      entityType: 'expense_reports', entityId: result.id,
-      companyId: result.company_id, newValues: { title: result.title, total_amount: result.total_amount },
+      userId: req.user.id, action: 'expense_created',
+      entityType: 'expenses', entityId: result.rows[0].id,
+      companyId: parseInt(company_id),
+      newValues: { category: normalizedCategory, amount, description },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Expenses] audit failed:', err.message));
 
-    setImmediate(() => queueRefresh(result.project_id, 'expense.create'));
+    if (project_id) {
+      setImmediate(() => queueRefresh(parseInt(project_id), 'expense.create'));
+    }
 
-    logger.info(`[Expenses] response sent in ${Date.now() - startTime}ms`);
-    res.status(201).json({ success: true, message: 'Expense report created.', data: result });
-  } catch (error) { next(error); }
+    res.status(201).json({ success: true, message: 'Expense created.', data: result.rows[0] });
+  } catch (error) {
+    logger.error('[Expenses] POST error:', { message: error.message, code: error.code });
+    next(error);
+  }
 });
 
 // ─── PUT /api/expenses/:id ────────────────────────────────────
 router.put('/:id', async (req, res, next) => {
-  const startTime = Date.now();
   try {
     const id = parseInt(req.params.id);
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
+    const existing = await query('SELECT * FROM expenses WHERE id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
+
+    const exp = existing.rows[0];
+    if (req.user.role !== 'admin' && exp.company_id !== parseInt(req.user.company_id)) {
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    }
+    if (!['draft','rejected'].includes(exp.status)) {
+      return res.status(400).json({ success: false, error: 'not_editable', message: `Cannot edit expense with status: ${exp.status}` });
     }
 
-    if (!['draft','ops_rejected','pm_rejected','finance_rejected'].includes(access.report.status)) {
-      return res.status(400).json({
-        success: false, error: 'not_editable',
-        message: `Cannot edit report with status: ${access.report.status}`
-      });
+    const { category, description, amount, tax_amount, expense_date,
+            reimbursable, attachment_url, receipt_url, notes } = req.body;
+
+    const normalizedCategory = category ? normalizeCategory(category) : null;
+    if (normalizedCategory && !VALID_CATEGORIES.includes(normalizedCategory)) {
+      return res.status(400).json({ success: false, error: 'invalid_category', message: `Invalid category: "${category}"`, accepted: VALID_CATEGORIES });
     }
 
-    const { title, notes, period_start, period_end, items } = req.body;
-
-    const result = await withTransaction(async (client) => {
-      const updated = await client.query(`
-        UPDATE expense_reports SET
-          title        = COALESCE($1, title),
-          notes        = COALESCE($2, notes),
-          period_start = COALESCE($3, period_start),
-          period_end   = COALESCE($4, period_end),
-          updated_at   = NOW()
-        WHERE id = $5 RETURNING *
-      `, [title || null, notes || null, period_start || null, period_end || null, id]);
-
-      if (items && items.length > 0) {
-        await client.query('DELETE FROM expense_items WHERE report_id = $1', [id]);
-        const total_amount = items.reduce((sum, item) =>
-          sum + (parseFloat(item.quantity || 1) * parseFloat(item.amount || 0)), 0);
-        for (const item of items) {
-          await client.query(`
-            INSERT INTO expense_items (
-              report_id, category, category_code, description,
-              amount, currency, exchange_rate, expense_date, receipt_url
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-          `, [id, item.category || 'other', item.category_code || 'other',
-              item.description, parseFloat(item.amount),
-              item.currency || 'MXN', parseFloat(item.exchange_rate || 1),
-              item.expense_date, item.receipt_url || null]);
-        }
-        await client.query(
-          'UPDATE expense_reports SET total_amount = $1 WHERE id = $2',
-          [total_amount, id]
-        );
-      }
-
-      return updated.rows[0];
-    });
+    const result = await query(`
+      UPDATE expenses SET
+        category       = COALESCE($1, category),
+        description    = COALESCE($2, description),
+        amount         = COALESCE($3::numeric, amount),
+        tax_amount     = COALESCE($4::numeric, tax_amount),
+        expense_date   = COALESCE($5, expense_date),
+        reimbursable   = COALESCE($6::boolean, reimbursable),
+        attachment_url = COALESCE($7, attachment_url),
+        receipt_url    = COALESCE($8, receipt_url),
+        notes          = COALESCE($9, notes),
+        updated_at     = NOW()
+      WHERE id = $10 RETURNING *
+    `, [
+      normalizedCategory || null, description || null,
+      amount || null, tax_amount || null,
+      expense_date || null, reimbursable !== undefined ? reimbursable : null,
+      attachment_url || null, receipt_url || null,
+      notes || null, id
+    ]);
 
     writeAudit({
-      userId: req.user.id, action: 'expense_report_updated',
-      entityType: 'expense_reports', entityId: id,
-      companyId: result.company_id,
+      userId: req.user.id, action: 'expense_updated',
+      entityType: 'expenses', entityId: id,
+      companyId: exp.company_id,
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Expenses] audit failed:', err.message));
 
-    setImmediate(() => queueRefresh(result.project_id, 'expense.update'));
-
-    res.json({ success: true, message: 'Expense report updated.', data: result });
-  } catch (error) { next(error); }
-});
-
-// ─── POST /api/expenses/:id/approve ──────────────────────────
-router.post('/:id/approve', async (req, res, next) => {
-  const startTime = Date.now();
-  logger.info('[Expenses] POST /:id/approve → request received');
-
-  try {
-    const id = parseInt(req.params.id);
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
-    }
-
-    const { notes, approved_amount } = req.body;
-    const { status } = access.report;
-    const role = req.user.role;
-
-    // Determine next status based on current status and role
-    let nextStatus, level, levelName;
-
-    if (status === 'submitted' && ['admin','supervisor','manager'].includes(role)) {
-      nextStatus = 'ops_approved'; level = 1; levelName = 'ops';
-    } else if (status === 'ops_approved' && ['admin','project_manager','manager'].includes(role)) {
-      nextStatus = 'pm_approved'; level = 2; levelName = 'pm';
-    } else if (status === 'pm_approved' && ['admin','finance'].includes(role)) {
-      nextStatus = 'finance_approved'; level = 3; levelName = 'finance';
-    } else {
-      return res.status(400).json({
-        success: false, error: 'invalid_approval',
-        message: `Cannot approve report with status '${status}' as role '${role}'`
-      });
-    }
-
-    const approvedAmt = approved_amount
-      ? parseFloat(approved_amount)
-      : (await query('SELECT total_amount FROM expense_reports WHERE id = $1', [id])).rows[0].total_amount;
-
-    const result = await withTransaction(async (client) => {
-      // Update report status
-      const updated = await client.query(`
-        UPDATE expense_reports SET
-          status = $1,
-          total_approved = $2,
-          ${levelName}_approved_by = $3,
-          ${levelName}_approved_at = NOW(),
-          ${levelName}_notes = $4,
-          updated_at = NOW()
-        WHERE id = $5 RETURNING *
-      `, [nextStatus, approvedAmt, req.user.id, notes || null, id]);
-
-      // Log approval
-      await client.query(`
-        INSERT INTO expense_approvals (report_id, level, level_name, action, approved_by, notes)
-        VALUES ($1,$2,$3,'approved',$4,$5)
-      `, [id, level, levelName, req.user.id, notes || null]);
-
-      return updated.rows[0];
-    });
-
-    logger.info(`[Expenses] approved to ${nextStatus} in ${Date.now() - startTime}ms`);
-
-    writeAudit({
-      userId: req.user.id, action: `expense_${levelName}_approved`,
-      entityType: 'expense_reports', entityId: id,
-      companyId: result.company_id,
-      oldValues: { status }, newValues: { status: nextStatus },
-      ip: req.ip, userAgent: req.get('user-agent')
-    }).catch(err => logger.error('[Expenses] audit failed:', err.message));
-
-    setImmediate(() => queueRefresh(result.project_id, 'expense.approve'));
-
-    res.json({ success: true, message: `Report ${nextStatus}.`, data: result });
-  } catch (error) { next(error); }
-});
-
-// ─── POST /api/expenses/:id/reject ───────────────────────────
-router.post('/:id/reject', async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id);
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
-    }
-
-    const { reason } = req.body;
-    if (!reason) {
-      return res.status(400).json({ success: false, error: 'validation_error', message: 'Rejection reason required.' });
-    }
-
-    const { status } = access.report;
-    const role = req.user.role;
-
-    let nextStatus, level, levelName;
-    if (status === 'submitted' && ['admin','supervisor','manager'].includes(role)) {
-      nextStatus = 'ops_rejected'; level = 1; levelName = 'ops';
-    } else if (status === 'ops_approved' && ['admin','project_manager','manager'].includes(role)) {
-      nextStatus = 'pm_rejected'; level = 2; levelName = 'pm';
-    } else if (status === 'pm_approved' && ['admin','finance'].includes(role)) {
-      nextStatus = 'finance_rejected'; level = 3; levelName = 'finance';
-    } else {
-      return res.status(400).json({ success: false, error: 'invalid_rejection', message: `Cannot reject report with status '${status}'` });
-    }
-
-    const result = await withTransaction(async (client) => {
-      const updated = await client.query(`
-        UPDATE expense_reports SET
-          status = $1, rejection_reason = $2, updated_at = NOW()
-        WHERE id = $3 RETURNING *
-      `, [nextStatus, reason, id]);
-
-      await client.query(`
-        INSERT INTO expense_approvals (report_id, level, level_name, action, approved_by, notes)
-        VALUES ($1,$2,$3,'rejected',$4,$5)
-      `, [id, level, levelName, req.user.id, reason]);
-
-      return updated.rows[0];
-    });
-
-    writeAudit({
-      userId: req.user.id, action: `expense_${levelName}_rejected`,
-      entityType: 'expense_reports', entityId: id,
-      companyId: result.company_id,
-      oldValues: { status }, newValues: { status: nextStatus, reason },
-      ip: req.ip, userAgent: req.get('user-agent')
-    }).catch(err => logger.error('[Expenses] audit failed:', err.message));
-
-    res.json({ success: true, message: `Report rejected.`, data: result });
+    res.json({ success: true, message: 'Expense updated.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
@@ -483,114 +309,140 @@ router.post('/:id/reject', async (req, res, next) => {
 router.post('/:id/submit', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
-    }
+    const existing = await query('SELECT * FROM expenses WHERE id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
 
-    if (!['draft','ops_rejected','pm_rejected','finance_rejected'].includes(access.report.status)) {
-      return res.status(400).json({ success: false, error: 'invalid_status', message: 'Only draft reports can be submitted.' });
-    }
-
-    // Verify has items
-    const items = await query('SELECT COUNT(*) AS cnt FROM expense_items WHERE report_id = $1', [id]);
-    if (parseInt(items.rows[0].cnt) === 0) {
-      return res.status(400).json({ success: false, error: 'no_items', message: 'Cannot submit report with no expense items.' });
+    if (!['draft','rejected'].includes(existing.rows[0].status)) {
+      return res.status(400).json({ success: false, error: 'invalid_status', message: 'Only draft expenses can be submitted.' });
     }
 
     const result = await query(`
-      UPDATE expense_reports SET
-        status = 'submitted', submitted_at = NOW(), updated_at = NOW()
+      UPDATE expenses SET status = 'submitted', submitted_at = NOW(), updated_at = NOW()
       WHERE id = $1 RETURNING *
     `, [id]);
 
     writeAudit({
       userId: req.user.id, action: 'expense_submitted',
-      entityType: 'expense_reports', entityId: id,
-      companyId: result.rows[0].company_id,
+      entityType: 'expenses', entityId: id,
+      companyId: existing.rows[0].company_id,
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Expenses] audit failed:', err.message));
 
-    res.json({ success: true, message: 'Report submitted for approval.', data: result.rows[0] });
+    res.json({ success: true, message: 'Expense submitted for approval.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── POST /api/expenses/:id/approve ──────────────────────────
+router.post('/:id/approve', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const existing = await query('SELECT * FROM expenses WHERE id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
+
+    const { status } = existing.rows[0];
+    const role = req.user.role;
+    const { notes } = req.body;
+
+    let nextStatus, levelCol;
+    if (status === 'submitted' && ['admin','supervisor','manager'].includes(role)) {
+      nextStatus = 'ops_approved'; levelCol = 'ops';
+    } else if (status === 'ops_approved' && ['admin','project_manager','manager'].includes(role)) {
+      nextStatus = 'pm_approved'; levelCol = 'pm';
+    } else if (status === 'pm_approved' && ['admin','finance'].includes(role)) {
+      nextStatus = 'finance_approved'; levelCol = 'finance';
+    } else {
+      return res.status(400).json({
+        success: false, error: 'invalid_approval',
+        message: `Cannot approve expense with status '${status}' as role '${role}'`
+      });
+    }
+
+    const result = await query(`
+      UPDATE expenses SET
+        status = $1,
+        ${levelCol}_approved_by = $2,
+        ${levelCol}_approved_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $3 RETURNING *
+    `, [nextStatus, req.user.id, id]);
+
+    writeAudit({
+      userId: req.user.id, action: `expense_${levelCol}_approved`,
+      entityType: 'expenses', entityId: id,
+      companyId: existing.rows[0].company_id,
+      oldValues: { status }, newValues: { status: nextStatus },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[Expenses] audit failed:', err.message));
+
+    res.json({ success: true, message: `Expense ${nextStatus}.`, data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── POST /api/expenses/:id/reject ───────────────────────────
+router.post('/:id/reject', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { reason } = req.body;
+    if (!reason) return res.status(400).json({ success: false, error: 'validation_error', message: 'Rejection reason required.' });
+
+    const existing = await query('SELECT * FROM expenses WHERE id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
+
+    const result = await query(`
+      UPDATE expenses SET status = 'rejected', rejection_reason = $1, updated_at = NOW()
+      WHERE id = $2 RETURNING *
+    `, [reason, id]);
+
+    writeAudit({
+      userId: req.user.id, action: 'expense_rejected',
+      entityType: 'expenses', entityId: id,
+      companyId: existing.rows[0].company_id,
+      newValues: { reason },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[Expenses] audit failed:', err.message));
+
+    res.json({ success: true, message: 'Expense rejected.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
 // ─── POST /api/expenses/:id/reimburse ────────────────────────
 router.post('/:id/reimburse', async (req, res, next) => {
   const startTime = Date.now();
-  logger.info('[Expenses] POST /:id/reimburse → request received');
-
   try {
-    const id = parseInt(req.params.id);
-
     if (!['admin','finance'].includes(req.user.role)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Only finance can process reimbursements.' });
     }
 
-    const access = await assertReportAccess(id, req.user);
-    if (access.error) {
-      return res.status(access.error === 'not_found' ? 404 : 403).json({
-        success: false, error: access.error, message: access.message
-      });
+    const id = parseInt(req.params.id);
+    const existing = await query('SELECT * FROM expenses WHERE id = $1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Expense not found.' });
+
+    if (existing.rows[0].status !== 'finance_approved') {
+      return res.status(400).json({ success: false, error: 'not_approved', message: 'Expense must be finance_approved before reimbursement.' });
     }
 
-    if (access.report.status !== 'finance_approved') {
-      return res.status(400).json({ success: false, error: 'not_approved', message: 'Report must be finance_approved before reimbursement.' });
-    }
-
-    const { amount, payment_method, reference, payment_date, notes } = req.body;
-    if (!amount || !payment_date) {
-      return res.status(400).json({ success: false, error: 'validation_error', message: 'Required: amount, payment_date' });
-    }
-
-    const report = await query('SELECT * FROM expense_reports WHERE id = $1', [id]);
-    const r = report.rows[0];
-
-    const result = await withTransaction(async (client) => {
-
-      // 1. Create reimbursement record
-      const reimb = await client.query(`
-        INSERT INTO expense_reimbursements (
-          report_id, company_id, project_id, employee_id,
-          amount, currency, payment_method, reference, payment_date, notes, paid_by
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
-      `, [id, r.company_id, r.project_id, r.employee_id,
-          parseFloat(amount), r.currency,
-          payment_method || null, reference || null,
-          payment_date, notes || null, req.user.id]);
-
-      // 2. Update report
-      const newTotalPaid = parseFloat(r.total_paid) + parseFloat(amount);
-      const newStatus = newTotalPaid >= parseFloat(r.total_approved) ? 'paid' : 'finance_approved';
-
-      const updated = await client.query(`
-        UPDATE expense_reports SET
-          total_paid = $1, status = $2,
-          paid_at = CASE WHEN $2 = 'paid' THEN NOW() ELSE paid_at END,
-          paid_by = CASE WHEN $2 = 'paid' THEN $3::uuid ELSE paid_by END,
-          updated_at = NOW()
-        WHERE id = $4 RETURNING *
-      `, [newTotalPaid, newStatus, req.user.id, id]);
-
-      return { reimbursement: reimb.rows[0], report: updated.rows[0] };
-    });
-
-    logger.info(`[Expenses] reimbursement committed in ${Date.now() - startTime}ms`);
+    const result = await query(`
+      UPDATE expenses SET
+        status = 'reimbursed',
+        reimbursed_at = NOW(),
+        reimbursed_by = $1,
+        updated_at = NOW()
+      WHERE id = $2 RETURNING *
+    `, [req.user.id, id]);
 
     writeAudit({
       userId: req.user.id, action: 'expense_reimbursed',
-      entityType: 'expense_reports', entityId: id,
-      companyId: r.company_id,
-      newValues: { amount, payment_date, status: result.report.status },
+      entityType: 'expenses', entityId: id,
+      companyId: existing.rows[0].company_id,
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Expenses] audit failed:', err.message));
 
-    setImmediate(() => queueRefresh(r.project_id, 'expense.reimburse'));
+    if (existing.rows[0].project_id) {
+      setImmediate(() => queueRefresh(existing.rows[0].project_id, 'expense.reimburse'));
+    }
 
-    logger.info(`[Expenses] reimburse response sent in ${Date.now() - startTime}ms`);
-    res.status(201).json({ success: true, message: 'Reimbursement processed.', data: result });
+    logger.info(`[Expenses] reimbursed in ${Date.now()-startTime}ms`);
+    res.json({ success: true, message: 'Expense reimbursed.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
