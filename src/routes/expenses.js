@@ -9,6 +9,7 @@ const { queueRefresh } = require('../services/financeRefresh');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
+console.log('[Expenses] v2 loaded - fleet_gasolina alias active');
 
 // ─── VALID CATEGORIES ─────────────────────────────────────────
 const VALID_CATEGORIES = [
