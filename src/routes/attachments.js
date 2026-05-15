@@ -14,22 +14,35 @@ const logger = require('../utils/logger');
 router.use(verifyToken);
 
 // ─── CONSTANTS ────────────────────────────────────────────────
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB (materials need larger for specs)
 
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
   'text/xml', 'application/xml',
   'image/jpeg', 'image/png', 'image/webp', 'image/gif',
   'application/zip', 'application/x-zip-compressed',
-  'application/octet-stream'
+  'application/octet-stream',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 ];
 
 const DOCUMENT_TYPE_MAP = {
-  'ar-invoices': 'ar_invoice',
-  'ap-bills':    'ap_bill',
-  'expenses':    'expense_report',
-  'internal-pos':'internal_po',
-  'projects':    'project'
+  'ar-invoices':  'ar_invoice',
+  'ap-bills':     'ap_bill',
+  'expenses':     'expense_report',
+  'internal-pos': 'internal_po',
+  'projects':     'project',
+  'materials':    'material'   // ← NEW
+};
+
+// Attachment categories by document type
+const ATTACHMENT_CATEGORIES = {
+  material: ['material_image','spec_sheet','vendor_catalog','installation_guide','safety_sheet','other'],
+  ar_invoice: ['invoice','receipt','xml_cfdi','other'],
+  ap_bill: ['invoice','receipt','xml_cfdi','purchase_order','other'],
+  default: ['invoice','receipt','contract','permit','photo','report','other']
 };
 
 // ─── STORAGE ADAPTER (local → future S3) ─────────────────────
@@ -114,7 +127,8 @@ async function assertDocumentAccess(documentType, documentId, user) {
     ap_bill:       { table: 'ap_bills',    col: 'company_id' },
     expense_report:{ table: 'expense_reports', col: 'company_id' },
     internal_po:   { table: 'internal_purchase_orders', col: 'company_id' },
-    project:       { table: 'projects',    col: 'company_id' }
+    project:       { table: 'projects',    col: 'company_id' },
+    material:      { table: 'materials',   col: 'company_id' }  // ← NEW
   };
 
   const mapping = tableMap[documentType];
@@ -138,8 +152,8 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
-    // View permissions
-    if (!['admin','finance','manager','supervisor','project_manager'].includes(req.user.role)) {
+    // View permissions — inventory team can also view
+    if (!['admin','finance','manager','supervisor','project_manager','operative','technician'].includes(req.user.role)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions.' });
     }
 
@@ -150,11 +164,14 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
       });
     }
 
+    const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
+
     const result = await query(`
       SELECT
-        a.id, a.original_filename, a.mime_type, a.file_size,
-        a.document_category, a.uploaded_at, a.storage_adapter,
-        a.cfdi_uuid, a.cfdi_validated,
+        a.id, a.original_filename, a.stored_filename,
+        a.mime_type, a.file_size,
+        a.document_category, a.storage_path, a.storage_adapter,
+        a.uploaded_at, a.cfdi_uuid, a.cfdi_validated,
         CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
       FROM document_attachments a
       LEFT JOIN users u ON u.id = a.uploaded_by
@@ -164,7 +181,16 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
       ORDER BY a.uploaded_at DESC
     `, [documentType, parseInt(id)]);
 
-    res.json({ success: true, count: result.rows.length, data: result.rows });
+    // Add frontend-compatible URL fields
+    const attachments = result.rows.map(a => ({
+      ...a,
+      file_url:   `${BASE_URL}/api/attachments/${a.id}/download`,
+      public_url: `${BASE_URL}/api/attachments/${a.id}/download`,
+      path:       a.storage_path,
+      is_image:   a.mime_type?.startsWith('image/') || false
+    }));
+
+    res.json({ success: true, count: attachments.length, data: attachments });
   } catch (error) { next(error); }
 });
 
@@ -178,9 +204,9 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
-    // Upload permissions
-    if (!['admin','finance','manager'].includes(req.user.role)) {
-      return res.status(403).json({ success: false, error: 'forbidden', message: 'Only finance/admin can upload attachments.' });
+    // Upload permissions — expand for inventory/operations
+    if (!['admin','finance','manager','supervisor','project_manager','operative','technician'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions to upload.' });
     }
 
     if (!req.files || req.files.length === 0) {
@@ -214,7 +240,7 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
             storage_path, storage_adapter, checksum,
             document_category, uploaded_by
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-          RETURNING id, original_filename, mime_type, file_size, uploaded_at
+          RETURNING id, original_filename, stored_filename, mime_type, file_size, storage_path, uploaded_at
         `, [
           access.companyId, documentType, parseInt(id),
           file.originalname, storedFilename, file.mimetype, file.size,
@@ -223,7 +249,15 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
           req.user.id
         ]);
 
-        savedAttachments.push(result.rows[0]);
+        const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
+        const att = result.rows[0];
+        savedAttachments.push({
+          ...att,
+          file_url:   `${BASE_URL}/api/attachments/${att.id}/download`,
+          public_url: `${BASE_URL}/api/attachments/${att.id}/download`,
+          path:       att.storage_path,
+          is_image:   att.mime_type?.startsWith('image/') || false
+        });
         logger.info(`[Attachments] Saved: ${file.originalname} (${file.size} bytes)`);
       } catch (fileErr) {
         // Don't fail entire request if one file fails
