@@ -158,6 +158,14 @@ router.post('/materials', async (req, res, next) => {
     body: { ...req.body, image_url: req.body.image_url ? '[present]' : null }
   });
 
+  // Dynamic category list — no DB constraint needed
+  const VALID_CATEGORIES = [
+    'fiber_cable','splitter','ont','closure','patch_cord',
+    'odf','connector','drop_cable','pole_hardware',
+    'duct_conduit','splice_tray','tool','vehicle',
+    'safety_equipment','consumable','structured_cabling','other'
+  ];
+
   try {
     const {
       company_id, sku, name, description, category, subcategory,
@@ -165,14 +173,10 @@ router.post('/materials', async (req, res, next) => {
       min_stock = 0, reorder_point = 0, standard_cost, currency = 'MXN',
       barcode_supplier, preferred_vendor_id, manufacturer, vendor_reference,
       image_url, thumbnail_url, spec_sheet_url, notes,
-
-      // Accept both naming conventions from frontend
-      serial_required,   requires_serial,   // DB field: serial_required
-      batch_required,    requires_lot,      // DB field: batch_required
-      lot_required                          // alias
+      serial_required, requires_serial,
+      batch_required,  requires_lot, lot_required
     } = req.body;
 
-    // Normalize boolean flags — accept any alias
     const serialRequired = serial_required ?? requires_serial ?? false;
     const batchRequired  = batch_required  ?? requires_lot    ?? lot_required ?? false;
 
@@ -182,6 +186,11 @@ router.post('/materials', async (req, res, next) => {
         message: 'Required: company_id, sku, name, category',
         missing: ['company_id','sku','name','category'].filter(f => !req.body[f])
       });
+    }
+
+    // Soft category validation — warn but don't block unknown categories
+    if (!VALID_CATEGORIES.includes(category)) {
+      logger.warn(`[Inventory] Unknown category "${category}" — allowing through`);
     }
 
     if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
@@ -203,7 +212,7 @@ router.post('/materials', async (req, res, next) => {
       notes||null, req.user.id
     ];
 
-    logger.info(`[Inventory] inserting material sku=${sku}`);
+    logger.info(`[Inventory] inserting material sku=${sku} category=${category}`);
 
     const result = await query(`
       INSERT INTO materials (
