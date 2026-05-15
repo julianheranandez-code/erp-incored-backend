@@ -703,4 +703,54 @@ router.post('/import', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── IMPORT TEMPLATE ─────────────────────────────────────────
+router.get('/import/template', async (req, res, next) => {
+  try {
+    const template = {
+      headers: [
+        'sku','name','category','subcategory','uom','min_stock',
+        'reorder_point','standard_cost','currency','fiber_count',
+        'reel_length','fiber_type','manufacturer','barcode_supplier','notes'
+      ],
+      example_rows: [
+        {
+          sku: 'FIB-96F-001', name: 'Cable Fibra 96F OS2',
+          category: 'fiber_cable', subcategory: 'backbone',
+          uom: 'm', min_stock: 500, reorder_point: 1000,
+          standard_cost: 18.50, currency: 'MXN',
+          fiber_count: 96, reel_length: 2000, fiber_type: 'OS2',
+          manufacturer: 'Corning', barcode_supplier: '', notes: ''
+        },
+        {
+          sku: 'SPL-1X8-SC', name: 'Splitter 1x8 SC/APC',
+          category: 'splitter', subcategory: '',
+          uom: 'pcs', min_stock: 20, reorder_point: 50,
+          standard_cost: 85, currency: 'MXN',
+          fiber_count: '', reel_length: '', fiber_type: '',
+          manufacturer: 'PLC Multimode', barcode_supplier: '', notes: ''
+        },
+        {
+          sku: 'ONT-HUA-001', name: 'ONT Huawei HG8310M',
+          category: 'ont', subcategory: '',
+          uom: 'pcs', min_stock: 10, reorder_point: 25,
+          standard_cost: 450, currency: 'MXN',
+          fiber_count: '', reel_length: '', fiber_type: '',
+          manufacturer: 'Huawei', barcode_supplier: '', notes: ''
+        }
+      ],
+      valid_categories: [
+        'fiber_cable','splitter','ont','closure','patch_cord',
+        'odf','connector','drop_cable','pole_hardware',
+        'duct_conduit','splice_tray','tool','vehicle',
+        'safety_equipment','consumable','other'
+      ],
+      valid_uom: ['m','ft','pcs','reel','box','unit','kg','lt','roll','pair'],
+      valid_currencies: ['MXN','USD'],
+      required_fields: ['sku','name','category','uom']
+    };
+
+    res.json({ success: true, data: template });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
