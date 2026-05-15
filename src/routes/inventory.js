@@ -153,22 +153,57 @@ router.get('/materials/:id', async (req, res, next) => {
 });
 
 router.post('/materials', async (req, res, next) => {
+  const startTime = Date.now();
+  logger.info('[Inventory] POST /materials → payload received', {
+    body: { ...req.body, image_url: req.body.image_url ? '[present]' : null }
+  });
+
   try {
     const {
       company_id, sku, name, description, category, subcategory,
       fiber_count, reel_length, fiber_type, uom = 'pcs',
       min_stock = 0, reorder_point = 0, standard_cost, currency = 'MXN',
       barcode_supplier, preferred_vendor_id, manufacturer, vendor_reference,
-      image_url, thumbnail_url, spec_sheet_url, serial_required = false, batch_required = false, notes
+      image_url, thumbnail_url, spec_sheet_url, notes,
+
+      // Accept both naming conventions from frontend
+      serial_required,   requires_serial,   // DB field: serial_required
+      batch_required,    requires_lot,      // DB field: batch_required
+      lot_required                          // alias
     } = req.body;
 
+    // Normalize boolean flags — accept any alias
+    const serialRequired = serial_required ?? requires_serial ?? false;
+    const batchRequired  = batch_required  ?? requires_lot    ?? lot_required ?? false;
+
     if (!company_id || !sku || !name || !category) {
-      return res.status(400).json({ success: false, error: 'validation_error', message: 'Required: company_id, sku, name, category' });
+      return res.status(400).json({
+        success: false, error: 'validation_error',
+        message: 'Required: company_id, sku, name, category',
+        missing: ['company_id','sku','name','category'].filter(f => !req.body[f])
+      });
     }
 
     if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
       return res.status(403).json({ success: false, error: 'forbidden' });
     }
+
+    const insertPayload = [
+      parseInt(company_id), sku, name, description||null, category, subcategory||null,
+      fiber_count ? parseInt(fiber_count) : null,
+      reel_length ? parseFloat(reel_length) : null,
+      fiber_type||null, uom,
+      parseFloat(min_stock || 0), parseFloat(reorder_point || 0),
+      standard_cost ? parseFloat(standard_cost) : null, currency,
+      barcode_supplier||null,
+      preferred_vendor_id ? parseInt(preferred_vendor_id) : null,
+      manufacturer||null, vendor_reference||null,
+      image_url||null, thumbnail_url||null, spec_sheet_url||null,
+      Boolean(serialRequired), Boolean(batchRequired),
+      notes||null, req.user.id
+    ];
+
+    logger.info(`[Inventory] inserting material sku=${sku}`);
 
     const result = await query(`
       INSERT INTO materials (
@@ -180,17 +215,9 @@ router.post('/materials', async (req, res, next) => {
         serial_required, batch_required, notes, created_by
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
       RETURNING *
-    `, [
-      parseInt(company_id), sku, name, description||null, category, subcategory||null,
-      fiber_count||null, reel_length||null, fiber_type||null, uom,
-      parseFloat(min_stock), parseFloat(reorder_point),
-      standard_cost ? parseFloat(standard_cost) : null, currency,
-      barcode_supplier||null,
-      preferred_vendor_id ? parseInt(preferred_vendor_id) : null,
-      manufacturer||null, vendor_reference||null,
-      image_url||null, thumbnail_url||null, spec_sheet_url||null,
-      serial_required, batch_required, notes||null, req.user.id
-    ]);
+    `, insertPayload);
+
+    logger.info(`[Inventory] material created id=${result.rows[0].id} in ${Date.now()-startTime}ms`);
 
     writeAudit({
       userId: req.user.id, action: 'material_created',
@@ -201,7 +228,10 @@ router.post('/materials', async (req, res, next) => {
 
     res.status(201).json({ success: true, message: 'Material created.', data: result.rows[0] });
   } catch (error) {
-    if (error.code === '23505') return res.status(409).json({ success: false, error: 'duplicate_sku', message: 'SKU already exists.' });
+    logger.error('[Inventory] POST /materials error:', { message: error.message, code: error.code });
+    if (error.code === '23505') return res.status(409).json({ success: false, error: 'duplicate_sku', message: `SKU "${req.body.sku}" already exists for this company.` });
+    if (error.code === '23514') return res.status(400).json({ success: false, error: 'constraint_violation', message: `Invalid value: ${error.message}` });
+    if (error.code === '23502') return res.status(400).json({ success: false, error: 'null_violation', message: `Required field missing: ${error.message}` });
     next(error);
   }
 });
