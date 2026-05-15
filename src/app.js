@@ -28,10 +28,10 @@ const internalPOsRoutes = require('./routes/internal-pos');
 const apBillsRoutes = require('./routes/ap-bills');
 const expensesRoutes = require('./routes/expenses');
 const pmoRoutes = require('./routes/pmo');
+const inventoryRoutes = require('./routes/inventory');
 const attachmentsRoutes = require('./routes/attachments');
 const crmRoutes         = require('./routes/crm');
 const transactionsRoutes = require('./routes/transactions');
-const inventoryRoutes   = require('./routes/inventory');
 const employeesRoutes   = require('./routes/employees');
 const reportsRoutes     = require('./routes/reports');
 const filesRoutes       = require('./routes/files');
@@ -147,10 +147,10 @@ app.use('/api/internal-pos', internalPOsRoutes);
 app.use('/api/ap-bills', apBillsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/pmo', pmoRoutes);
+app.use('/api/inventory', inventoryRoutes);
 app.use('/api', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
-app.use('/api/inventory',    inventoryRoutes);
 app.use('/api/employees',    employeesRoutes);
 app.use('/api',              reportsRoutes);       // /api/reports/*, /api/dashboards/*
 app.use('/api/files',        filesRoutes);
