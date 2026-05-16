@@ -11,6 +11,53 @@ const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const logger = require('../utils/logger');
 
+const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
+const ALLOWED_IMAGE_TYPES = ['image/jpeg','image/jpg','image/png','image/webp','image/gif'];
+
+// ─── PUBLIC PREVIEW (no auth) ────────────────────────────────
+// Must be BEFORE router.use(verifyToken)
+router.get('/attachments/:id/preview', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const result = await query(
+      'SELECT * FROM document_attachments WHERE id = $1 AND is_deleted = FALSE',
+      [id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ success: false, error: 'not_found' });
+    }
+
+    const attachment = result.rows[0];
+
+    // Only allow image files for public preview
+    if (!ALLOWED_IMAGE_TYPES.includes(attachment.mime_type)) {
+      return res.status(415).json({ success: false, error: 'not_image', message: 'Only image files can be previewed publicly.' });
+    }
+
+    // Read file from storage
+    const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
+    const filePath = path.join(UPLOAD_DIR, attachment.storage_path);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'file_not_found' });
+    }
+
+    const buffer = fs.readFileSync(filePath);
+
+    res.set({
+      'Content-Type': attachment.mime_type,
+      'Content-Disposition': `inline; filename="${attachment.original_filename}"`,
+      'Content-Length': buffer.length,
+      'Cache-Control': 'public, max-age=86400'  // Cache 24h
+    });
+
+    res.send(buffer);
+  } catch (error) {
+    logger.error('[Attachments] preview error:', error.message);
+    next(error);
+  }
+});
+
 router.use(verifyToken);
 
 // ─── CONSTANTS ────────────────────────────────────────────────
@@ -184,10 +231,12 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
     // Add frontend-compatible URL fields
     const attachments = result.rows.map(a => ({
       ...a,
-      file_url:   `${BASE_URL}/api/attachments/${a.id}/download`,
-      public_url: `${BASE_URL}/api/attachments/${a.id}/download`,
-      path:       a.storage_path,
-      is_image:   a.mime_type?.startsWith('image/') || false
+      file_url:    `${BASE_URL}/api/attachments/${a.id}/download`,
+      public_url:  `${BASE_URL}/api/attachments/${a.id}/download`,
+      preview_url: ALLOWED_IMAGE_TYPES.includes(a.mime_type) ? `${BASE_URL}/api/attachments/${a.id}/preview` : null,
+      url:         ALLOWED_IMAGE_TYPES.includes(a.mime_type) ? `${BASE_URL}/api/attachments/${a.id}/preview` : `${BASE_URL}/api/attachments/${a.id}/download`,
+      path:        a.storage_path,
+      is_image:    ALLOWED_IMAGE_TYPES.includes(a.mime_type) || false
     }));
 
     res.json({ success: true, count: attachments.length, data: attachments });
@@ -251,14 +300,16 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
           req.user.id
         ]);
 
-        const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
         const att = result.rows[0];
+        const isImage = ALLOWED_IMAGE_TYPES.includes(att.mime_type);
         savedAttachments.push({
           ...att,
-          file_url:   `${BASE_URL}/api/attachments/${att.id}/download`,
-          public_url: `${BASE_URL}/api/attachments/${att.id}/download`,
-          path:       att.storage_path,
-          is_image:   att.mime_type?.startsWith('image/') || false
+          file_url:    `${BASE_URL}/api/attachments/${att.id}/download`,
+          public_url:  `${BASE_URL}/api/attachments/${att.id}/download`,
+          preview_url: isImage ? `${BASE_URL}/api/attachments/${att.id}/preview` : null,
+          url:         isImage ? `${BASE_URL}/api/attachments/${att.id}/preview` : `${BASE_URL}/api/attachments/${att.id}/download`,
+          path:        att.storage_path,
+          is_image:    isImage
         });
         logger.info(`[Attachments] Saved: ${file.originalname} (${file.size} bytes)`);
       } catch (fileErr) {
@@ -273,14 +324,15 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     if (documentType === 'material') {
       const firstImage = savedAttachments.find(a => a.is_image);
       if (firstImage) {
+        const imageUrl = firstImage.preview_url || firstImage.file_url;
         await query(`
           UPDATE materials SET
             image_url     = $1,
             thumbnail_url = $1,
             updated_at    = NOW()
           WHERE id = $2
-        `, [firstImage.file_url, parseInt(id)]);
-        logger.info(`[Attachments] material id=${id} image_url updated → ${firstImage.file_url}`);
+        `, [imageUrl, parseInt(id)]);
+        logger.info(`[Attachments] material id=${id} image_url updated → ${imageUrl}`);
       }
     }
 
