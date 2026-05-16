@@ -278,10 +278,29 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Attachments] audit failed:', err.message));
 
+    // Normalize response — support both single and multiple files
+    // Frontend expects: { success, data: { id, file_url, public_url, url, ... } }
+    const first = savedAttachments[0] || null;
+
     res.status(201).json({
       success: true,
       message: `${savedAttachments.length} file(s) uploaded.`,
-      data: savedAttachments
+      // Top-level URL fields for frontend single-file parsers
+      file_url:   first?.file_url   || null,
+      public_url: first?.public_url || null,
+      url:        first?.file_url   || null,
+      path:       first?.path       || null,
+      is_image:   first?.is_image   || false,
+      // Full data — single object if 1 file, array if multiple
+      data: savedAttachments.length === 1 ? {
+        ...first,
+        file_url:   first.file_url,
+        public_url: first.public_url,
+        url:        first.file_url,
+        path:       first.path,
+        is_image:   first.is_image
+      } : savedAttachments,
+      attachments: savedAttachments
     });
   } catch (error) {
     if (error.message?.startsWith('FILE_TYPE_NOT_ALLOWED')) {
