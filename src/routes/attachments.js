@@ -269,6 +269,21 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
 
     logger.info(`[Attachments] ${savedAttachments.length}/${files.length} files saved in ${Date.now()-startTime}ms`);
 
+    // ── AUTO-UPDATE PRIMARY IMAGE for materials ───────────────
+    if (documentType === 'material') {
+      const firstImage = savedAttachments.find(a => a.is_image);
+      if (firstImage) {
+        await query(`
+          UPDATE materials SET
+            image_url     = $1,
+            thumbnail_url = $1,
+            updated_at    = NOW()
+          WHERE id = $2
+        `, [firstImage.file_url, parseInt(id)]);
+        logger.info(`[Attachments] material id=${id} image_url updated → ${firstImage.file_url}`);
+      }
+    }
+
     // Fire and forget audit
     writeAudit({
       userId: req.user.id, action: 'attachment_uploaded',
@@ -384,6 +399,19 @@ router.delete('/attachments/:id', async (req, res, next) => {
 
     if (!result.rows[0]) {
       return res.status(404).json({ success: false, error: 'not_found', message: 'Attachment not found.' });
+    }
+
+    // If deleted attachment was a material image → clear image_url
+    if (result.rows[0].document_type === 'material') {
+      const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
+      const deletedUrl = `${BASE_URL}/api/attachments/${id}/download`;
+      await query(`
+        UPDATE materials SET
+          image_url     = CASE WHEN image_url = $1 THEN NULL ELSE image_url END,
+          thumbnail_url = CASE WHEN thumbnail_url = $1 THEN NULL ELSE thumbnail_url END,
+          updated_at    = NOW()
+        WHERE id = $2
+      `, [deletedUrl, result.rows[0].document_id]);
     }
 
     // Audit log
