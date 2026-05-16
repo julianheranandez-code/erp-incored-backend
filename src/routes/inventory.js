@@ -9,6 +9,8 @@ const logger = require('../utils/logger');
 
 router.use(verifyToken);
 
+const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
+
 // ─── ISOLATION ────────────────────────────────────────────────
 function getAuthorizedCompanyId(user, requestedCompanyId) {
   if (user.role === 'admin') return requestedCompanyId ? parseInt(requestedCompanyId) : null;
@@ -74,6 +76,8 @@ router.get('/materials', async (req, res, next) => {
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
 
+    logger.info('[Inventory] GET /materials', { authorizedCompanyId, category, search });
+
     const conditions = [];
     const values = [];
     let idx = 1;
@@ -81,21 +85,38 @@ router.get('/materials', async (req, res, next) => {
     if (authorizedCompanyId) { conditions.push(`m.company_id = $${idx++}`); values.push(authorizedCompanyId); }
     if (category)            { conditions.push(`m.category = $${idx++}`);   values.push(category); }
     if (search) {
-      conditions.push(`(m.name ILIKE $${idx} OR m.sku ILIKE $${idx} OR m.barcode_internal ILIKE $${idx})`);
-      values.push(`%${search}%`); idx++;
+      // FIX: each $idx must be unique — push value once per placeholder
+      conditions.push(`(m.name ILIKE $${idx} OR m.sku ILIKE $${idx+1} OR m.barcode_internal ILIKE $${idx+2})`);
+      const searchVal = `%${search}%`;
+      values.push(searchVal, searchVal, searchVal);
+      idx += 3;
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')} AND m.is_active = TRUE` : 'WHERE m.is_active = TRUE';
+    const where = conditions.length
+      ? `WHERE ${conditions.join(' AND ')} AND m.is_active = TRUE`
+      : 'WHERE m.is_active = TRUE';
 
     const [materials, total] = await Promise.all([
       query(`
         SELECT m.*,
           v.name AS vendor_name,
           COALESCE(SUM(ws.qty_available), 0) AS total_stock,
-          COALESCE(SUM(ws.qty_reserved), 0) AS total_reserved,
-          COALESCE(SUM(ws.qty_damaged), 0) AS total_damaged
+          COALESCE(SUM(ws.qty_reserved), 0)  AS total_reserved,
+          COALESCE(SUM(ws.qty_damaged), 0)   AS total_damaged,
+          -- Auto-resolve image_url from attachments if null
+          COALESCE(
+            m.image_url,
+            (SELECT 'https://incored-api.onrender.com/api/attachments/' || da.id || '/preview'
+             FROM document_attachments da
+             WHERE da.document_type = 'material'
+               AND da.document_id = m.id
+               AND da.is_deleted = FALSE
+               AND da.mime_type IN ('image/jpeg','image/jpg','image/png','image/webp')
+             ORDER BY da.uploaded_at DESC
+             LIMIT 1)
+          ) AS image_url
         FROM materials m
-        LEFT JOIN clients v ON v.id = m.preferred_vendor_id
+        LEFT JOIN clients v        ON v.id = m.preferred_vendor_id
         LEFT JOIN warehouse_stock ws ON ws.material_id = m.id
         ${where}
         GROUP BY m.id, v.name
@@ -105,10 +126,37 @@ router.get('/materials', async (req, res, next) => {
       query(`SELECT COUNT(*) AS total FROM materials m ${where}`, values)
     ]);
 
+    logger.info(`[Inventory] GET /materials returned ${materials.rows.length} rows`);
+
+    // Inject preview_url for materials with null image_url
+    const enriched = await Promise.all(materials.rows.map(async (mat) => {
+      if (!mat.image_url) {
+        // Try to find first image attachment
+        const att = await query(`
+          SELECT id FROM document_attachments
+          WHERE document_type = 'material'
+            AND document_id = $1
+            AND is_deleted = FALSE
+            AND mime_type IN ('image/jpeg','image/jpg','image/png','image/webp','image/gif')
+          ORDER BY uploaded_at ASC LIMIT 1
+        `, [mat.id]);
+
+        if (att.rows[0]) {
+          const previewUrl = `${BASE_URL}/api/attachments/${att.rows[0].id}/preview`;
+          // Update DB so next request is instant
+          query('UPDATE materials SET image_url=$1, thumbnail_url=$1 WHERE id=$2',
+            [previewUrl, mat.id]).catch(() => {});
+          logger.info(`[Inventory] material id=${mat.id} resolved image_url → ${previewUrl}`);
+          return { ...mat, image_url: previewUrl, thumbnail_url: previewUrl };
+        }
+      }
+      return mat;
+    }));
+
     res.json({
       success: true,
       data: {
-        materials: materials.rows,
+        materials: enriched,
         pagination: {
           total: parseInt(total.rows[0].total),
           page: parseInt(page), limit: parseInt(limit),
@@ -116,7 +164,10 @@ router.get('/materials', async (req, res, next) => {
         }
       }
     });
-  } catch (error) { next(error); }
+  } catch (error) {
+    logger.error('[Inventory] GET /materials error:', { message: error.message, code: error.code });
+    next(error);
+  }
 });
 
 router.get('/materials/:id', async (req, res, next) => {
