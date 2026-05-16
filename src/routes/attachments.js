@@ -195,7 +195,7 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
 });
 
 // ─── POST /:kind/:id/attachments ──────────────────────────────
-router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res, next) => {
+router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
   const startTime = Date.now();
   logger.info(`[Attachments] POST /${req.params.kind}/${req.params.id}/attachments`);
 
@@ -209,7 +209,9 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions to upload.' });
     }
 
-    if (!req.files || req.files.length === 0) {
+    // Accept files from any field name (file, files, image, attachment, etc.)
+    const files = req.files || [];
+    if (files.length === 0) {
       return res.status(400).json({ success: false, error: 'no_files', message: 'No files uploaded.' });
     }
 
@@ -223,7 +225,7 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
     const { document_category } = req.body;
     const savedAttachments = [];
 
-    for (const file of req.files) {
+    for (const file of files) {
       try {
         const storedFilename = generateStoredFilename(file.originalname);
         const checksum = computeChecksum(file.buffer);
@@ -265,7 +267,7 @@ router.post('/:kind/:id/attachments', upload.array('files', 10), async (req, res
       }
     }
 
-    logger.info(`[Attachments] ${savedAttachments.length}/${req.files.length} files saved in ${Date.now()-startTime}ms`);
+    logger.info(`[Attachments] ${savedAttachments.length}/${files.length} files saved in ${Date.now()-startTime}ms`);
 
     // Fire and forget audit
     writeAudit({
