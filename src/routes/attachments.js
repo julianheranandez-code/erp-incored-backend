@@ -35,23 +35,31 @@ router.get('/attachments/:id/preview', async (req, res, next) => {
       return res.status(415).json({ success: false, error: 'not_image', message: 'Only image files can be previewed publicly.' });
     }
 
-    // Read file from storage
+    // Try to read file from disk
     const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
     const filePath = path.join(UPLOAD_DIR, attachment.storage_path);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, error: 'file_not_found' });
+
+    logger.info(`[PREVIEW] attachment id=${id} storage_path=${attachment.storage_path}`);
+    logger.info(`[PREVIEW] reading: ${filePath}`);
+    logger.info(`[PREVIEW] exists: ${fs.existsSync(filePath)}`);
+
+    if (fs.existsSync(filePath)) {
+      // Serve directly from disk
+      const buffer = fs.readFileSync(filePath);
+      res.set({
+        'Content-Type': attachment.mime_type,
+        'Content-Disposition': `inline; filename="${attachment.original_filename}"`,
+        'Content-Length': buffer.length,
+        'Cache-Control': 'public, max-age=86400'
+      });
+      return res.send(buffer);
     }
 
-    const buffer = fs.readFileSync(filePath);
+    // Fallback: redirect to /uploads/ static path
+    const staticUrl = `${BASE_URL}/uploads/${attachment.storage_path}`;
+    logger.info(`[PREVIEW] file not found on disk, redirecting to: ${staticUrl}`);
+    return res.redirect(302, staticUrl);
 
-    res.set({
-      'Content-Type': attachment.mime_type,
-      'Content-Disposition': `inline; filename="${attachment.original_filename}"`,
-      'Content-Length': buffer.length,
-      'Cache-Control': 'public, max-age=86400'  // Cache 24h
-    });
-
-    res.send(buffer);
   } catch (error) {
     logger.error('[Attachments] preview error:', error.message);
     next(error);
@@ -229,15 +237,20 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
     `, [documentType, parseInt(id)]);
 
     // Add frontend-compatible URL fields
-    const attachments = result.rows.map(a => ({
-      ...a,
-      file_url:    `${BASE_URL}/api/attachments/${a.id}/download`,
-      public_url:  `${BASE_URL}/api/attachments/${a.id}/download`,
-      preview_url: ALLOWED_IMAGE_TYPES.includes(a.mime_type) ? `${BASE_URL}/api/attachments/${a.id}/preview` : null,
-      url:         ALLOWED_IMAGE_TYPES.includes(a.mime_type) ? `${BASE_URL}/api/attachments/${a.id}/preview` : `${BASE_URL}/api/attachments/${a.id}/download`,
-      path:        a.storage_path,
-      is_image:    ALLOWED_IMAGE_TYPES.includes(a.mime_type) || false
-    }));
+    const attachments = result.rows.map(a => {
+      const isImage = ALLOWED_IMAGE_TYPES.includes(a.mime_type);
+      const staticUrl   = `${BASE_URL}/uploads/${a.storage_path}`;
+      const downloadUrl = `${BASE_URL}/api/attachments/${a.id}/download`;
+      return {
+        ...a,
+        file_url:    downloadUrl,
+        public_url:  isImage ? staticUrl : downloadUrl,
+        preview_url: isImage ? staticUrl : null,
+        url:         isImage ? staticUrl : downloadUrl,
+        path:        a.storage_path,
+        is_image:    isImage
+      };
+    });
 
     res.json({ success: true, count: attachments.length, data: attachments });
   } catch (error) { next(error); }
@@ -302,12 +315,18 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
 
         const att = result.rows[0];
         const isImage = ALLOWED_IMAGE_TYPES.includes(att.mime_type);
+        // PUBLIC static URL — no auth, works in <img src="">
+        const staticUrl   = `${BASE_URL}/uploads/${att.storage_path}`;
+        const downloadUrl = `${BASE_URL}/api/attachments/${att.id}/download`;
+
+        logger.info(`[UPLOAD] storage_path=${att.storage_path} isImage=${isImage} staticUrl=${staticUrl}`);
+
         savedAttachments.push({
           ...att,
-          file_url:    `${BASE_URL}/api/attachments/${att.id}/download`,
-          public_url:  `${BASE_URL}/api/attachments/${att.id}/download`,
-          preview_url: isImage ? `${BASE_URL}/api/attachments/${att.id}/preview` : null,
-          url:         isImage ? `${BASE_URL}/api/attachments/${att.id}/preview` : `${BASE_URL}/api/attachments/${att.id}/download`,
+          file_url:    downloadUrl,
+          public_url:  isImage ? staticUrl : downloadUrl,
+          preview_url: isImage ? staticUrl : null,
+          url:         isImage ? staticUrl : downloadUrl,
           path:        att.storage_path,
           is_image:    isImage
         });
@@ -324,7 +343,8 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     if (documentType === 'material') {
       const firstImage = savedAttachments.find(a => a.is_image);
       if (firstImage) {
-        const imageUrl = firstImage.preview_url || firstImage.file_url;
+        // Store /uploads/ static URL — publicly accessible without auth
+        const imageUrl = `${BASE_URL}/uploads/${firstImage.storage_path}`;
         await query(`
           UPDATE materials SET
             image_url     = $1,
@@ -332,7 +352,7 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
             updated_at    = NOW()
           WHERE id = $2
         `, [imageUrl, parseInt(id)]);
-        logger.info(`[Attachments] material id=${id} image_url updated → ${imageUrl}`);
+        logger.info(`[Attachments] material id=${id} image_url → ${imageUrl}`);
       }
     }
 
@@ -346,24 +366,22 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     }).catch(err => logger.error('[Attachments] audit failed:', err.message));
 
     // Normalize response — support both single and multiple files
-    // Frontend expects: { success, data: { id, file_url, public_url, url, ... } }
     const first = savedAttachments[0] || null;
 
     res.status(201).json({
       success: true,
       message: `${savedAttachments.length} file(s) uploaded.`,
-      // Top-level URL fields for frontend single-file parsers
+      // Use public_url for images (no auth needed in <img src="">)
       file_url:   first?.file_url   || null,
       public_url: first?.public_url || null,
-      url:        first?.file_url   || null,
+      url:        first?.is_image ? first?.public_url : first?.file_url,
       path:       first?.path       || null,
       is_image:   first?.is_image   || false,
-      // Full data — single object if 1 file, array if multiple
       data: savedAttachments.length === 1 ? {
         ...first,
         file_url:   first.file_url,
         public_url: first.public_url,
-        url:        first.file_url,
+        url:        first.is_image ? first.public_url : first.file_url,
         path:       first.path,
         is_image:   first.is_image
       } : savedAttachments,
@@ -446,7 +464,7 @@ router.delete('/attachments/:id', async (req, res, next) => {
         deleted_at = NOW(),
         deleted_by = $1
       WHERE id = $2 AND is_deleted = FALSE
-      RETURNING id, original_filename, document_type, document_id
+      RETURNING id, original_filename, document_type, document_id, storage_path
     `, [req.user.id, id]);
 
     if (!result.rows[0]) {
@@ -455,15 +473,16 @@ router.delete('/attachments/:id', async (req, res, next) => {
 
     // If deleted attachment was a material image → clear image_url
     if (result.rows[0].document_type === 'material') {
-      const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
-      const deletedUrl = `${BASE_URL}/api/attachments/${id}/download`;
+      // Compare against /uploads/ static URL (what we store in image_url)
+      const deletedStaticUrl = `${BASE_URL}/uploads/${result.rows[0].storage_path}`;
       await query(`
         UPDATE materials SET
           image_url     = CASE WHEN image_url = $1 THEN NULL ELSE image_url END,
           thumbnail_url = CASE WHEN thumbnail_url = $1 THEN NULL ELSE thumbnail_url END,
           updated_at    = NOW()
         WHERE id = $2
-      `, [deletedUrl, result.rows[0].document_id]);
+      `, [deletedStaticUrl, result.rows[0].document_id]);
+      logger.info(`[Attachments] DELETE: cleared material image_url if matched ${deletedStaticUrl}`);
     }
 
     // Audit log

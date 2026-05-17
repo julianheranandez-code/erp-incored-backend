@@ -106,7 +106,7 @@ router.get('/materials', async (req, res, next) => {
           -- Auto-resolve image_url from attachments if null
           COALESCE(
             m.image_url,
-            (SELECT 'https://incored-api.onrender.com/api/attachments/' || da.id || '/preview'
+            (SELECT 'https://incored-api.onrender.com/uploads/' || da.storage_path
              FROM document_attachments da
              WHERE da.document_type = 'material'
                AND da.document_id = m.id
@@ -128,26 +128,26 @@ router.get('/materials', async (req, res, next) => {
 
     logger.info(`[Inventory] GET /materials returned ${materials.rows.length} rows`);
 
-    // Inject preview_url for materials with null image_url
+    // Enrich materials — resolve image_url from attachments if null
     const enriched = await Promise.all(materials.rows.map(async (mat) => {
       if (!mat.image_url) {
-        // Try to find first image attachment
         const att = await query(`
-          SELECT id FROM document_attachments
+          SELECT storage_path FROM document_attachments
           WHERE document_type = 'material'
             AND document_id = $1
             AND is_deleted = FALSE
             AND mime_type IN ('image/jpeg','image/jpg','image/png','image/webp','image/gif')
-          ORDER BY uploaded_at ASC LIMIT 1
+          ORDER BY uploaded_at DESC LIMIT 1
         `, [mat.id]);
 
         if (att.rows[0]) {
-          const previewUrl = `${BASE_URL}/api/attachments/${att.rows[0].id}/preview`;
+          // ALWAYS use /uploads/ static path — no auth needed
+          const imageUrl = `${BASE_URL}/uploads/${att.rows[0].storage_path}`;
           // Update DB so next request is instant
           query('UPDATE materials SET image_url=$1, thumbnail_url=$1 WHERE id=$2',
-            [previewUrl, mat.id]).catch(() => {});
-          logger.info(`[Inventory] material id=${mat.id} resolved image_url → ${previewUrl}`);
-          return { ...mat, image_url: previewUrl, thumbnail_url: previewUrl };
+            [imageUrl, mat.id]).catch(() => {});
+          logger.info(`[Inventory] material id=${mat.id} resolved image_url → ${imageUrl}`);
+          return { ...mat, image_url: imageUrl, thumbnail_url: imageUrl };
         }
       }
       return mat;
