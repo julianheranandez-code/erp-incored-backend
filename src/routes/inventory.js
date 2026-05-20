@@ -1235,4 +1235,228 @@ router.post('/projects/:project_id/allocate', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── PHASE II-D: INVENTORY VALUATION ─────────────────────────
+
+// GET /api/inventory/valuation
+router.get('/valuation', async (req, res, next) => {
+  try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const { warehouse_id, category } = req.query;
+
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (authorizedCompanyId) { conditions.push(`company_id = $${idx++}`); values.push(authorizedCompanyId); }
+    if (warehouse_id)        { conditions.push(`warehouse_id = $${idx++}`); values.push(parseInt(warehouse_id)); }
+    if (category)            { conditions.push(`category = $${idx++}`); values.push(category); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const [detail, summary] = await Promise.all([
+      query(`SELECT * FROM inventory_valuation ${where} ORDER BY warehouse_name, material_name ASC`, values),
+      query(`
+        SELECT
+          company_id,
+          COALESCE(SUM(available_value), 0)  AS total_available_value,
+          COALESCE(SUM(reserved_value), 0)   AS total_reserved_value,
+          COALESCE(SUM(damaged_value), 0)    AS total_damaged_value,
+          COALESCE(SUM(total_value), 0)      AS total_inventory_value,
+          COUNT(DISTINCT material_id)        AS unique_materials,
+          COUNT(DISTINCT warehouse_id)       AS warehouses_with_stock
+        FROM inventory_valuation ${where}
+      `, values)
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        summary: summary.rows[0],
+        detail:  detail.rows
+      }
+    });
+  } catch (error) { next(error); }
+});
+
+// GET /api/inventory/valuation/by-warehouse
+router.get('/valuation/by-warehouse', async (req, res, next) => {
+  try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const companyFilter = authorizedCompanyId ? `WHERE company_id = ${authorizedCompanyId}` : '';
+
+    const result = await query(`
+      SELECT warehouse_id, warehouse_name, warehouse_type,
+        COUNT(DISTINCT material_id) AS material_count,
+        COALESCE(SUM(available_value), 0) AS available_value,
+        COALESCE(SUM(total_value), 0)     AS total_value
+      FROM inventory_valuation ${companyFilter}
+      GROUP BY warehouse_id, warehouse_name, warehouse_type
+      ORDER BY total_value DESC
+    `);
+
+    res.json({ success: true, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// GET /api/inventory/valuation/by-category
+router.get('/valuation/by-category', async (req, res, next) => {
+  try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const companyFilter = authorizedCompanyId ? `WHERE company_id = ${authorizedCompanyId}` : '';
+
+    const result = await query(`
+      SELECT category,
+        COUNT(DISTINCT material_id) AS material_count,
+        COALESCE(SUM(available_value), 0) AS available_value,
+        COALESCE(SUM(total_value), 0)     AS total_value
+      FROM inventory_valuation ${companyFilter}
+      GROUP BY category
+      ORDER BY total_value DESC
+    `);
+
+    res.json({ success: true, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// ─── EXTEND INVENTORY MOVEMENTS with costing ─────────────────
+
+// Override POST /inventory-movements to support weighted avg cost
+router.post('/inventory-movements/costed', async (req, res, next) => {
+  const startTime = Date.now();
+  try {
+    const {
+      company_id, material_id,
+      source_warehouse_id, destination_warehouse_id,
+      movement_type, quantity, unit_cost, currency = 'USD',
+      purchase_order_id, vendor_id, invoice_number,
+      project_id, crew_id, vehicle_id, assigned_to,
+      work_order_id, damage_reason, notes
+    } = req.body;
+
+    if (!material_id || !movement_type || !quantity) {
+      return res.status(400).json({
+        success: false, error: 'validation_error',
+        message: 'Required: material_id, movement_type, quantity'
+      });
+    }
+
+    // Enforce cost for IN movements
+    if (movement_type === 'IN' && !unit_cost) {
+      return res.status(400).json({
+        success: false, error: 'validation_error',
+        message: 'IN movements require unit_cost'
+      });
+    }
+
+    const qty      = parseFloat(quantity);
+    const cost     = unit_cost ? parseFloat(unit_cost) : null;
+    const totalCost = cost ? qty * cost : null;
+    const companyId = parseInt(company_id || req.user.company_id);
+
+    const result = await withTransaction(async (client) => {
+      // 1. Create movement with costing fields
+      const movement = await client.query(`
+        INSERT INTO inventory_movements (
+          material_id, source_warehouse_id, destination_warehouse_id,
+          movement_type, quantity, unit_cost, total_cost, currency,
+          valuation_method, purchase_order_id, vendor_id, invoice_number,
+          project_id, crew_id, vehicle_id, work_order_id,
+          damage_reason, notes, performed_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'WEIGHTED_AVG',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        RETURNING *
+      `, [
+        parseInt(material_id),
+        source_warehouse_id ? parseInt(source_warehouse_id) : null,
+        destination_warehouse_id ? parseInt(destination_warehouse_id) : null,
+        movement_type, qty, cost, totalCost, currency,
+        purchase_order_id ? parseInt(purchase_order_id) : null,
+        vendor_id ? parseInt(vendor_id) : null,
+        invoice_number || null,
+        project_id ? parseInt(project_id) : null,
+        crew_id ? parseInt(crew_id) : null,
+        vehicle_id ? parseInt(vehicle_id) : null,
+        work_order_id || null,
+        damage_reason || null,
+        notes || null, req.user.id
+      ]);
+
+      // 2. Update warehouse stock
+      if (['IN','RETURN'].includes(movement_type) && destination_warehouse_id) {
+        await client.query(`
+          INSERT INTO warehouse_stock (warehouse_id, material_id, company_id, qty_available, last_cost, last_movement)
+          VALUES ($1,$2,$3,$4,$5,NOW())
+          ON CONFLICT (warehouse_id, material_id) DO UPDATE SET
+            qty_available = warehouse_stock.qty_available + $4,
+            last_cost     = COALESCE($5, warehouse_stock.last_cost),
+            last_movement = NOW(), updated_at = NOW()
+        `, [parseInt(destination_warehouse_id), parseInt(material_id), companyId, qty, cost]);
+      }
+
+      if (['OUT','ASSIGN','INSTALLED'].includes(movement_type) && source_warehouse_id) {
+        await client.query(`
+          UPDATE warehouse_stock SET
+            qty_available = GREATEST(0, qty_available - $1),
+            last_movement = NOW(), updated_at = NOW()
+          WHERE warehouse_id = $2 AND material_id = $3
+        `, [qty, parseInt(source_warehouse_id), parseInt(material_id)]);
+      }
+
+      // 3. Weighted Average Cost update (IN movements only)
+      if (movement_type === 'IN' && cost) {
+        const mat = await client.query(
+          'SELECT avg_cost FROM materials WHERE id = $1',
+          [parseInt(material_id)]
+        );
+        const oldAvg = parseFloat(mat.rows[0]?.avg_cost || 0);
+
+        // Get current total qty across all warehouses
+        const totalQty = await client.query(`
+          SELECT COALESCE(SUM(qty_available), 0) AS total
+          FROM warehouse_stock WHERE material_id = $1
+        `, [parseInt(material_id)]);
+        const oldQty = parseFloat(totalQty.rows[0].total) - qty; // before this IN
+
+        const newAvg = oldQty <= 0
+          ? cost
+          : ((oldQty * oldAvg) + (qty * cost)) / (oldQty + qty);
+
+        await client.query(`
+          UPDATE materials SET
+            avg_cost           = $1,
+            last_purchase_cost = $2,
+            updated_at         = NOW()
+          WHERE id = $3
+        `, [Math.round(newAvg * 10000) / 10000, cost, parseInt(material_id)]);
+
+        logger.info(`[Inventory] Weighted avg cost updated: material=${material_id} old=${oldAvg} new=${newAvg}`);
+      }
+
+      // 4. Update INSTALLED value on material
+      if (movement_type === 'INSTALLED' && cost) {
+        await client.query(`
+          UPDATE materials SET
+            total_installed_value = total_installed_value + $1,
+            updated_at = NOW()
+          WHERE id = $2
+        `, [totalCost, parseInt(material_id)]);
+      }
+
+      if (movement_type === 'DAMAGED' && cost) {
+        await client.query(`
+          UPDATE materials SET
+            total_damaged_value = total_damaged_value + $1,
+            updated_at = NOW()
+          WHERE id = $2
+        `, [totalCost, parseInt(material_id)]);
+      }
+
+      return movement.rows[0];
+    });
+
+    logger.info(`[Inventory] costed movement ${movement_type} qty=${qty} cost=${cost} in ${Date.now()-startTime}ms`);
+
+    res.status(201).json({ success: true, message: 'Movement recorded with costing.', data: result });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
