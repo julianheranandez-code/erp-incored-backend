@@ -109,6 +109,7 @@ app.use((req, res, next) => {
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 app.use('/api/', generalLimiter);
+app.use('/uploads', express.static(require('path').join(process.cwd(), 'uploads')));
 
 // ─── Health Checks ────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
@@ -148,6 +149,7 @@ app.use('/api/ap-bills', apBillsRoutes);
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/pmo', pmoRoutes);
 app.use('/api/inventory', inventoryRoutes);
+app.use('/api/admin/cleanup', require('./routes/adminCleanup'));
 app.use('/api', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
