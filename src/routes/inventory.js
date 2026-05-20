@@ -103,15 +103,16 @@ router.get('/materials', async (req, res, next) => {
           COALESCE(SUM(ws.qty_available), 0) AS total_stock,
           COALESCE(SUM(ws.qty_reserved), 0)  AS total_reserved,
           COALESCE(SUM(ws.qty_damaged), 0)   AS total_damaged,
-          -- Auto-resolve image_url from attachments if null
+          -- Auto-resolve image_url from S3 attachments if null
           COALESCE(
             m.image_url,
-            (SELECT 'https://incored-api.onrender.com/uploads/' || da.storage_path
+            (SELECT 'https://incored-erp-uploads.s3.' || 'us-east-2' || '.amazonaws.com/' || da.storage_path
              FROM document_attachments da
              WHERE da.document_type = 'material'
                AND da.document_id = m.id
                AND da.is_deleted = FALSE
                AND da.mime_type IN ('image/jpeg','image/jpg','image/png','image/webp')
+               AND da.storage_adapter = 's3'
              ORDER BY da.uploaded_at DESC
              LIMIT 1)
           ) AS image_url
@@ -132,7 +133,7 @@ router.get('/materials', async (req, res, next) => {
     const enriched = await Promise.all(materials.rows.map(async (mat) => {
       if (!mat.image_url) {
         const att = await query(`
-          SELECT storage_path FROM document_attachments
+          SELECT storage_path, storage_adapter FROM document_attachments
           WHERE document_type = 'material'
             AND document_id = $1
             AND is_deleted = FALSE
@@ -141,12 +142,19 @@ router.get('/materials', async (req, res, next) => {
         `, [mat.id]);
 
         if (att.rows[0]) {
-          // ALWAYS use /uploads/ static path — no auth needed
-          const imageUrl = `${BASE_URL}/uploads/${att.rows[0].storage_path}`;
-          // Update DB so next request is instant
+          const { storage_path, storage_adapter: adapter } = att.rows[0];
+          // Use storageAdapter to get correct URL — no hardcoded S3 URL
+          const storageAdapterSvc = require('../services/storageAdapter');
+          const imageUrl = storageAdapterSvc.getPublicUrl(storage_path, adapter);
+
+          if (!imageUrl || adapter !== 's3') {
+            // No valid S3 image — return null, don't use fake URLs
+            return mat;
+          }
+
+          logger.info(`[IMG] resolved image_url: ${imageUrl} (adapter=${adapter})`);
           query('UPDATE materials SET image_url=$1, thumbnail_url=$1 WHERE id=$2',
             [imageUrl, mat.id]).catch(() => {});
-          logger.info(`[Inventory] material id=${mat.id} resolved image_url → ${imageUrl}`);
           return { ...mat, image_url: imageUrl, thumbnail_url: imageUrl };
         }
       }

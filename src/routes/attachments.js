@@ -4,23 +4,24 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
+const fs   = require('fs');
 const crypto = require('crypto');
 const { query } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const logger = require('../utils/logger');
+const storageAdapter = require('../services/storageAdapter');
 
 const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
 const ALLOWED_IMAGE_TYPES = ['image/jpeg','image/jpg','image/png','image/webp','image/gif'];
 
 // ─── PUBLIC PREVIEW (no auth) ────────────────────────────────
-// Must be BEFORE router.use(verifyToken)
+// Redirects to S3 public URL — no local filesystem
 router.get('/attachments/:id/preview', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const result = await query(
-      'SELECT * FROM document_attachments WHERE id = $1 AND is_deleted = FALSE',
+      'SELECT id, mime_type, storage_path, storage_adapter, original_filename FROM document_attachments WHERE id = $1 AND is_deleted = FALSE',
       [id]
     );
 
@@ -30,36 +31,16 @@ router.get('/attachments/:id/preview', async (req, res, next) => {
 
     const attachment = result.rows[0];
 
-    // Only allow image files for public preview
     if (!ALLOWED_IMAGE_TYPES.includes(attachment.mime_type)) {
-      return res.status(415).json({ success: false, error: 'not_image', message: 'Only image files can be previewed publicly.' });
+      return res.status(415).json({ success: false, error: 'not_image' });
     }
 
-    // Try to read file from disk
-    const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
-    const filePath = path.join(UPLOAD_DIR, attachment.storage_path);
+    // Use storageAdapter to get correct public URL
+    const storageAdapter = require('../services/storageAdapter');
+    const publicUrl = storageAdapter.getPublicUrl(attachment.storage_path, attachment.storage_adapter);
+    logger.info(`[PREVIEW] id=${id} adapter=${attachment.storage_adapter} → redirect: ${publicUrl}`);
 
-    logger.info(`[PREVIEW] attachment id=${id} storage_path=${attachment.storage_path}`);
-    logger.info(`[PREVIEW] reading: ${filePath}`);
-    logger.info(`[PREVIEW] exists: ${fs.existsSync(filePath)}`);
-
-    if (fs.existsSync(filePath)) {
-      // Serve directly from disk
-      const buffer = fs.readFileSync(filePath);
-      res.set({
-        'Content-Type': attachment.mime_type,
-        'Content-Disposition': `inline; filename="${attachment.original_filename}"`,
-        'Content-Length': buffer.length,
-        'Cache-Control': 'public, max-age=86400'
-      });
-      return res.send(buffer);
-    }
-
-    // Fallback: redirect to /uploads/ static path
-    const staticUrl = `${BASE_URL}/uploads/${attachment.storage_path}`;
-    logger.info(`[PREVIEW] file not found on disk, redirecting to: ${staticUrl}`);
-    return res.redirect(302, staticUrl);
-
+    return res.redirect(302, publicUrl);
   } catch (error) {
     logger.error('[Attachments] preview error:', error.message);
     next(error);
@@ -100,56 +81,9 @@ const ATTACHMENT_CATEGORIES = {
   default: ['invoice','receipt','contract','permit','photo','report','other']
 };
 
-// ─── STORAGE ADAPTER (local → future S3) ─────────────────────
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(process.cwd(), 'uploads');
-
-// Ensure upload directory exists
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
-
-// Storage abstraction layer
-const storageAdapter = {
-  // Save file locally
-  async save(buffer, storedFilename, documentType) {
-    const dir = path.join(UPLOAD_DIR, documentType);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const filePath = path.join(dir, storedFilename);
-    fs.writeFileSync(filePath, buffer);
-    return {
-      storage_path: `${documentType}/${storedFilename}`,
-      storage_adapter: 'local'
-    };
-    // TODO: Replace with S3 adapter:
-    // const s3 = new AWS.S3();
-    // await s3.upload({ Bucket: process.env.S3_BUCKET, Key: `${documentType}/${storedFilename}`, Body: buffer }).promise();
-    // return { storage_path: `s3://${process.env.S3_BUCKET}/${documentType}/${storedFilename}`, storage_adapter: 's3' };
-  },
-
-  // Read file
-  async read(storagePath, storageAdapter) {
-    if (storageAdapter === 'local') {
-      const filePath = path.join(UPLOAD_DIR, storagePath);
-      if (!fs.existsSync(filePath)) return null;
-      return fs.readFileSync(filePath);
-    }
-    // TODO: S3 read
-    return null;
-  },
-
-  // Delete file
-  async delete(storagePath, storageAdapter) {
-    if (storageAdapter === 'local') {
-      const filePath = path.join(UPLOAD_DIR, storagePath);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
-    // TODO: S3 delete
-  }
-};
-
 // ─── MULTER CONFIG ────────────────────────────────────────────
 const upload = multer({
-  storage: multer.memoryStorage(), // Store in memory, then save via adapter
+  storage: multer.memoryStorage(),
   limits: { fileSize: MAX_FILE_SIZE },
   fileFilter: (req, file, cb) => {
     if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
@@ -238,15 +172,15 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
 
     // Add frontend-compatible URL fields
     const attachments = result.rows.map(a => {
-      const isImage = ALLOWED_IMAGE_TYPES.includes(a.mime_type);
-      const staticUrl   = `${BASE_URL}/uploads/${a.storage_path}`;
+      const isImage   = ALLOWED_IMAGE_TYPES.includes(a.mime_type);
+      const publicUrl  = storageAdapter.getPublicUrl(a.storage_path, a.storage_adapter, a.mime_type);
       const downloadUrl = `${BASE_URL}/api/attachments/${a.id}/download`;
       return {
         ...a,
         file_url:    downloadUrl,
-        public_url:  isImage ? staticUrl : downloadUrl,
-        preview_url: isImage ? staticUrl : null,
-        url:         isImage ? staticUrl : downloadUrl,
+        public_url:  isImage ? publicUrl : downloadUrl,
+        preview_url: isImage ? publicUrl : null,
+        url:         isImage ? publicUrl : downloadUrl,
         path:        a.storage_path,
         is_image:    isImage
       };
@@ -292,8 +226,8 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
         const storedFilename = generateStoredFilename(file.originalname);
         const checksum = computeChecksum(file.buffer);
 
-        // Save via storage adapter (local or future S3)
-        const { storage_path, storage_adapter } = await storageAdapter.save(
+        // Save via storage adapter (S3 or local)
+        const { storage_path, storage_adapter, public_url: storedPublicUrl } = await storageAdapter.save(
           file.buffer, storedFilename, documentType
         );
 
@@ -304,7 +238,7 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
             storage_path, storage_adapter, checksum,
             document_category, uploaded_by
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-          RETURNING id, original_filename, stored_filename, mime_type, file_size, storage_path, uploaded_at
+          RETURNING id, original_filename, stored_filename, mime_type, file_size, storage_path, storage_adapter, uploaded_at
         `, [
           access.companyId, documentType, parseInt(id),
           file.originalname, storedFilename, file.mimetype, file.size,
@@ -315,18 +249,19 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
 
         const att = result.rows[0];
         const isImage = ALLOWED_IMAGE_TYPES.includes(att.mime_type);
-        // PUBLIC static URL — no auth, works in <img src="">
-        const staticUrl   = `${BASE_URL}/uploads/${att.storage_path}`;
-        const downloadUrl = `${BASE_URL}/api/attachments/${att.id}/download`;
+        // S3 URL if uploaded to S3, otherwise local
+        const publicUrl = storedPublicUrl;
 
-        logger.info(`[UPLOAD] storage_path=${att.storage_path} isImage=${isImage} staticUrl=${staticUrl}`);
+        logger.info(`[UPLOAD] storage_adapter=${att.storage_adapter} storage_path=${att.storage_path}`);
+        logger.info(`[S3] public url: ${publicUrl}`);
+        logger.info(`[FRONTEND IMG SRC]: ${isImage ? publicUrl : 'N/A (not image)'}`);
 
         savedAttachments.push({
           ...att,
-          file_url:    downloadUrl,
-          public_url:  isImage ? staticUrl : downloadUrl,
-          preview_url: isImage ? staticUrl : null,
-          url:         isImage ? staticUrl : downloadUrl,
+          file_url:    `${BASE_URL}/api/attachments/${att.id}/download`,
+          public_url:  isImage ? publicUrl : `${BASE_URL}/api/attachments/${att.id}/download`,
+          preview_url: isImage ? publicUrl : null,
+          url:         isImage ? publicUrl : `${BASE_URL}/api/attachments/${att.id}/download`,
           path:        att.storage_path,
           is_image:    isImage
         });
@@ -343,16 +278,12 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     if (documentType === 'material') {
       const firstImage = savedAttachments.find(a => a.is_image);
       if (firstImage) {
-        // Store /uploads/ static URL — publicly accessible without auth
-        const imageUrl = `${BASE_URL}/uploads/${firstImage.storage_path}`;
+        const imageUrl = firstImage.public_url;
         await query(`
-          UPDATE materials SET
-            image_url     = $1,
-            thumbnail_url = $1,
-            updated_at    = NOW()
-          WHERE id = $2
+          UPDATE materials SET image_url=$1, thumbnail_url=$1, updated_at=NOW()
+          WHERE id=$2
         `, [imageUrl, parseInt(id)]);
-        logger.info(`[Attachments] material id=${id} image_url → ${imageUrl}`);
+        logger.info(`[UPLOAD] persisted image_url: ${imageUrl}`);
       }
     }
 
@@ -464,7 +395,7 @@ router.delete('/attachments/:id', async (req, res, next) => {
         deleted_at = NOW(),
         deleted_by = $1
       WHERE id = $2 AND is_deleted = FALSE
-      RETURNING id, original_filename, document_type, document_id, storage_path
+      RETURNING id, original_filename, document_type, document_id, storage_path, storage_adapter
     `, [req.user.id, id]);
 
     if (!result.rows[0]) {
@@ -473,16 +404,19 @@ router.delete('/attachments/:id', async (req, res, next) => {
 
     // If deleted attachment was a material image → clear image_url
     if (result.rows[0].document_type === 'material') {
-      // Compare against /uploads/ static URL (what we store in image_url)
-      const deletedStaticUrl = `${BASE_URL}/uploads/${result.rows[0].storage_path}`;
+      const storageAdapterSvc = require('../services/storageAdapter');
+      const deletedUrl = storageAdapterSvc.getPublicUrl(
+        result.rows[0].storage_path,
+        result.rows[0].storage_adapter
+      );
       await query(`
         UPDATE materials SET
           image_url     = CASE WHEN image_url = $1 THEN NULL ELSE image_url END,
           thumbnail_url = CASE WHEN thumbnail_url = $1 THEN NULL ELSE thumbnail_url END,
           updated_at    = NOW()
         WHERE id = $2
-      `, [deletedStaticUrl, result.rows[0].document_id]);
-      logger.info(`[Attachments] DELETE: cleared material image_url if matched ${deletedStaticUrl}`);
+      `, [deletedUrl, result.rows[0].document_id]);
+      logger.info(`[Attachments] DELETE: cleared material image_url if matched ${deletedUrl}`);
     }
 
     // Audit log
