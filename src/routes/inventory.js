@@ -49,16 +49,19 @@ router.get('/warehouses', async (req, res, next) => {
 router.post('/warehouses', async (req, res, next) => {
   try {
     const { company_id, code, name, type = 'physical', location, city, state,
-            assigned_crew_id, assigned_project_id, notes } = req.body;
+            assigned_crew_id, assigned_project_id, notes, is_virtual = false,
+            manager_user_id, address, country = 'MX' } = req.body;
 
     if (!company_id || !code || !name) {
       return res.status(400).json({ success: false, error: 'validation_error', message: 'Required: company_id, code, name' });
     }
 
     const result = await query(`
-      INSERT INTO warehouses (company_id, code, name, type, location, city, state, assigned_crew_id, assigned_project_id, notes, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *
-    `, [parseInt(company_id), code, name, type, location||null, city||null, state||null,
+      INSERT INTO warehouses (company_id, code, name, type, location, city, state, country,
+        assigned_crew_id, assigned_project_id, notes, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
+    `, [parseInt(company_id), code, name, type,
+        address || location || null, city||null, state||null, country,
         assigned_crew_id||null, assigned_project_id||null, notes||null, req.user.id]);
 
     res.status(201).json({ success: true, message: 'Warehouse created.', data: result.rows[0] });
@@ -66,6 +69,63 @@ router.post('/warehouses', async (req, res, next) => {
     if (error.code === '23505') return res.status(409).json({ success: false, error: 'duplicate_code', message: 'Warehouse code already exists.' });
     next(error);
   }
+});
+
+// ─── PUT /warehouses/:id ──────────────────────────────────────
+router.put('/warehouses/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { name, type, location, address, city, state, country,
+            notes, is_active, manager_user_id } = req.body;
+
+    const result = await query(`
+      UPDATE warehouses SET
+        name       = COALESCE($1, name),
+        type       = COALESCE($2, type),
+        location   = COALESCE($3, location),
+        city       = COALESCE($4, city),
+        state      = COALESCE($5, state),
+        country    = COALESCE($6, country),
+        notes      = COALESCE($7, notes),
+        is_active  = COALESCE($8::boolean, is_active),
+        updated_at = NOW()
+      WHERE id = $9 RETURNING *
+    `, [name||null, type||null, address||location||null,
+        city||null, state||null, country||null,
+        notes||null, is_active !== undefined ? is_active : null, id]);
+
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    res.json({ success: true, message: 'Warehouse updated.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── POST /warehouses/:id/toggle ─────────────────────────────
+router.post('/warehouses/:id/toggle', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const result = await query(`
+      UPDATE warehouses SET is_active = NOT is_active, updated_at = NOW()
+      WHERE id = $1 RETURNING *
+    `, [id]);
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    res.json({ success: true, message: `Warehouse ${result.rows[0].is_active ? 'activated' : 'deactivated'}.`, data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── GET /warehouses/:id/stock ────────────────────────────────
+router.get('/warehouses/:id/stock', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const result = await query(`
+      SELECT ws.*, m.name AS material_name, m.sku, m.uom, m.category,
+        m.image_url, m.min_stock AS material_min_stock
+      FROM warehouse_stock ws
+      JOIN materials m ON m.id = ws.material_id
+      WHERE ws.warehouse_id = $1
+      ORDER BY m.name ASC
+    `, [id]);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (error) { next(error); }
 });
 
 // ─── MATERIALS ────────────────────────────────────────────────
@@ -848,6 +908,159 @@ router.get('/import/template', async (req, res, next) => {
     };
 
     res.json({ success: true, data: template });
+  } catch (error) { next(error); }
+});
+
+// ─── INVENTORY MOVEMENTS (new enum) ──────────────────────────
+
+router.get('/inventory-movements', async (req, res, next) => {
+  try {
+    const { material_id, warehouse_id, movement_type, page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (authorizedCompanyId) {
+      conditions.push(`(sw.company_id = $${idx} OR dw.company_id = $${idx})`);
+      values.push(authorizedCompanyId); idx++;
+    }
+    if (material_id)   { conditions.push(`im.material_id = $${idx++}`);    values.push(parseInt(material_id)); }
+    if (warehouse_id)  { conditions.push(`(im.source_warehouse_id = $${idx} OR im.destination_warehouse_id = $${idx})`); values.push(parseInt(warehouse_id)); idx++; }
+    if (movement_type) { conditions.push(`im.movement_type = $${idx++}`);  values.push(movement_type); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const result = await query(`
+      SELECT im.*,
+        m.name AS material_name, m.sku,
+        sw.name AS source_warehouse_name,
+        dw.name AS destination_warehouse_name,
+        CONCAT(u.first_name,' ',u.last_name) AS performed_by_name
+      FROM inventory_movements im
+      LEFT JOIN materials m  ON m.id = im.material_id
+      LEFT JOIN warehouses sw ON sw.id = im.source_warehouse_id
+      LEFT JOIN warehouses dw ON dw.id = im.destination_warehouse_id
+      LEFT JOIN users u      ON u.id = im.performed_by
+      ${where}
+      ORDER BY im.created_at DESC
+      LIMIT $${idx} OFFSET $${idx+1}
+    `, [...values, parseInt(limit), offset]);
+
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+router.post('/inventory-movements', async (req, res, next) => {
+  const startTime = Date.now();
+  try {
+    const {
+      material_id, source_warehouse_id, destination_warehouse_id,
+      movement_type, quantity, unit_cost,
+      reference_type, reference_id, notes, company_id
+    } = req.body;
+
+    if (!material_id || !movement_type || !quantity) {
+      return res.status(400).json({
+        success: false, error: 'validation_error',
+        message: 'Required: material_id, movement_type, quantity'
+      });
+    }
+
+    const VALID_TYPES = ['IN','OUT','TRANSFER','RESERVE','ASSIGN','RETURN','ADJUSTMENT','DAMAGED','INSTALLED'];
+    if (!VALID_TYPES.includes(movement_type)) {
+      return res.status(400).json({
+        success: false, error: 'invalid_movement_type',
+        message: `Valid types: ${VALID_TYPES.join(', ')}`
+      });
+    }
+
+    const qty = parseFloat(quantity);
+
+    const result = await withTransaction(async (client) => {
+      // 1. Create movement record
+      const movement = await client.query(`
+        INSERT INTO inventory_movements (
+          material_id, source_warehouse_id, destination_warehouse_id,
+          movement_type, quantity, unit_cost,
+          reference_type, reference_id, notes, performed_by
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *
+      `, [
+        parseInt(material_id),
+        source_warehouse_id ? parseInt(source_warehouse_id) : null,
+        destination_warehouse_id ? parseInt(destination_warehouse_id) : null,
+        movement_type, qty,
+        unit_cost ? parseFloat(unit_cost) : null,
+        reference_type || null,
+        reference_id ? parseInt(reference_id) : null,
+        notes || null, req.user.id
+      ]);
+
+      // 2. Update warehouse_stock
+      const companyId = parseInt(company_id || req.user.company_id);
+
+      if (['IN','RETURN'].includes(movement_type) && destination_warehouse_id) {
+        await client.query(`
+          INSERT INTO warehouse_stock (warehouse_id, material_id, company_id, qty_available, last_movement)
+          VALUES ($1,$2,$3,$4,NOW())
+          ON CONFLICT (warehouse_id, material_id) DO UPDATE SET
+            qty_available = warehouse_stock.qty_available + $4,
+            last_movement = NOW(), updated_at = NOW()
+        `, [parseInt(destination_warehouse_id), parseInt(material_id), companyId, qty]);
+      }
+
+      if (['OUT','ASSIGN','INSTALLED'].includes(movement_type) && source_warehouse_id) {
+        await client.query(`
+          UPDATE warehouse_stock SET
+            qty_available = GREATEST(0, qty_available - $1),
+            last_movement = NOW(), updated_at = NOW()
+          WHERE warehouse_id = $2 AND material_id = $3
+        `, [qty, parseInt(source_warehouse_id), parseInt(material_id)]);
+      }
+
+      if (movement_type === 'TRANSFER' && source_warehouse_id && destination_warehouse_id) {
+        await client.query(`
+          UPDATE warehouse_stock SET
+            qty_available = GREATEST(0, qty_available - $1),
+            last_movement = NOW(), updated_at = NOW()
+          WHERE warehouse_id = $2 AND material_id = $3
+        `, [qty, parseInt(source_warehouse_id), parseInt(material_id)]);
+
+        await client.query(`
+          INSERT INTO warehouse_stock (warehouse_id, material_id, company_id, qty_available, last_movement)
+          VALUES ($1,$2,$3,$4,NOW())
+          ON CONFLICT (warehouse_id, material_id) DO UPDATE SET
+            qty_available = warehouse_stock.qty_available + $4,
+            last_movement = NOW(), updated_at = NOW()
+        `, [parseInt(destination_warehouse_id), parseInt(material_id), companyId, qty]);
+      }
+
+      if (movement_type === 'DAMAGED' && source_warehouse_id) {
+        await client.query(`
+          UPDATE warehouse_stock SET
+            qty_available = GREATEST(0, qty_available - $1),
+            qty_damaged = qty_damaged + $1,
+            last_movement = NOW(), updated_at = NOW()
+          WHERE warehouse_id = $2 AND material_id = $3
+        `, [qty, parseInt(source_warehouse_id), parseInt(material_id)]);
+      }
+
+      return movement.rows[0];
+    });
+
+    logger.info(`[Inventory] movement ${movement_type} qty=${qty} in ${Date.now()-startTime}ms`);
+
+    writeAudit({
+      userId: req.user.id, action: 'inventory_movement',
+      entityType: 'inventory_movements', entityId: result.id,
+      companyId: parseInt(company_id || req.user.company_id),
+      newValues: { movement_type, quantity: qty, material_id },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[Inventory] audit failed:', err.message));
+
+    res.status(201).json({ success: true, message: 'Movement recorded.', data: result });
   } catch (error) { next(error); }
 });
 
