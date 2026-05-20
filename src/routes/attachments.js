@@ -70,16 +70,23 @@ const DOCUMENT_TYPE_MAP = {
   'expenses':     'expense_report',
   'internal-pos': 'internal_po',
   'projects':     'project',
-  'materials':    'material'   // ← NEW
+  'materials':    'material',
+  'clients':      'client'    // ← NEW
 };
 
 // Attachment categories by document type
 const ATTACHMENT_CATEGORIES = {
   material: ['material_image','spec_sheet','vendor_catalog','installation_guide','safety_sheet','other'],
+  client: [
+    'CONTRACT','NDA','SAT','RFC','CONSTANCIA_FISCAL','PURCHASE_ORDER','AGREEMENT',
+    'MSA','SOW','W9','COI','RATE_CARD','INSURANCE','VENDOR_PACKAGE','SAFETY','OTHER'
+  ],
   ar_invoice: ['invoice','receipt','xml_cfdi','other'],
   ap_bill: ['invoice','receipt','xml_cfdi','purchase_order','other'],
   default: ['invoice','receipt','contract','permit','photo','report','other']
 };
+
+const SENSITIVE_DOC_TYPES = ['NDA','MSA','W9','COI','CONTRACT'];
 
 // ─── MULTER CONFIG ────────────────────────────────────────────
 const upload = multer({
@@ -117,7 +124,8 @@ async function assertDocumentAccess(documentType, documentId, user) {
     expense_report:{ table: 'expense_reports', col: 'company_id' },
     internal_po:   { table: 'internal_purchase_orders', col: 'company_id' },
     project:       { table: 'projects',    col: 'company_id' },
-    material:      { table: 'materials',   col: 'company_id' }  // ← NEW
+    material:      { table: 'materials',   col: 'company_id' },
+    client:        { table: 'clients',     col: 'company_id' }  // ← NEW
   };
 
   const mapping = tableMap[documentType];
@@ -161,6 +169,8 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
         a.mime_type, a.file_size,
         a.document_category, a.storage_path, a.storage_adapter,
         a.uploaded_at, a.cfdi_uuid, a.cfdi_validated,
+        a.expiration_date, a.notes,
+        COALESCE(a.is_sensitive, FALSE) AS is_sensitive,
         CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
       FROM document_attachments a
       LEFT JOIN users u ON u.id = a.uploaded_by
@@ -195,6 +205,12 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
   const startTime = Date.now();
   logger.info(`[Attachments] POST /${req.params.kind}/${req.params.id}/attachments`);
 
+  // ── MULTER DIAGNOSTICS ─────────────────────────────────────
+  console.log('[MULTER] content-type:', req.headers['content-type']);
+  console.log('[MULTER] req.files:', req.files);
+  console.log('[MULTER] req.files length:', req.files?.length);
+  console.log('[MULTER] req.body keys:', Object.keys(req.body || {}));
+
   try {
     const { kind, id } = req.params;
     const documentType = getDocumentType(kind);
@@ -205,10 +221,20 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions to upload.' });
     }
 
-    // Accept files from any field name (file, files, image, attachment, etc.)
+    // Accept files from any field name
     const files = req.files || [];
+    console.log('[FILES RECEIVED]:', files.length, files.map(f => ({ name: f.originalname, size: f.size, type: f.mimetype })));
+
     if (files.length === 0) {
-      return res.status(400).json({ success: false, error: 'no_files', message: 'No files uploaded.' });
+      return res.status(400).json({
+        success: false, error: 'no_files',
+        message: 'No files received by server. Check FormData field name and Content-Type.',
+        debug: {
+          content_type: req.headers['content-type'],
+          body_keys: Object.keys(req.body || {}),
+          files_received: 0
+        }
+      });
     }
 
     const access = await assertDocumentAccess(documentType, parseInt(id), req.user);
@@ -218,7 +244,9 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       });
     }
 
-    const { document_category } = req.body;
+    const { document_category, expiration_date, notes: docNotes, is_sensitive } = req.body;
+    const isSensitive = is_sensitive === 'true' || is_sensitive === true ||
+      SENSITIVE_DOC_TYPES.includes((document_category || '').toUpperCase());
     const savedAttachments = [];
 
     for (const file of files) {
@@ -236,14 +264,20 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
             company_id, document_type, document_id,
             original_filename, stored_filename, mime_type, file_size,
             storage_path, storage_adapter, checksum,
-            document_category, uploaded_by
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-          RETURNING id, original_filename, stored_filename, mime_type, file_size, storage_path, storage_adapter, uploaded_at
+            document_category, notes, is_sensitive, expiration_date,
+            uploaded_by
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          RETURNING id, original_filename, stored_filename, mime_type, file_size,
+                    storage_path, storage_adapter, uploaded_at,
+                    document_category, is_sensitive, expiration_date, notes
         `, [
           access.companyId, documentType, parseInt(id),
           file.originalname, storedFilename, file.mimetype, file.size,
           storage_path, storage_adapter, checksum,
           document_category || null,
+          docNotes || null,
+          isSensitive || false,
+          expiration_date || null,
           req.user.id
         ]);
 
