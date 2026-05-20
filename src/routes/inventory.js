@@ -1064,4 +1064,175 @@ router.post('/inventory-movements', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── PROJECT ALLOCATION ───────────────────────────────────────
+
+// GET /api/inventory/projects/:project_id/inventory
+router.get('/projects/:project_id/inventory', async (req, res, next) => {
+  try {
+    const project_id = parseInt(req.params.project_id);
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
+    // Get all project virtual warehouses
+    const warehouses = await query(`
+      SELECT w.id, w.name, w.code, w.type
+      FROM warehouses w
+      WHERE w.assigned_project_id = $1
+        ${authorizedCompanyId ? `AND w.company_id = ${authorizedCompanyId}` : ''}
+      ORDER BY w.name ASC
+    `, [project_id]);
+
+    // Get stock per project warehouse
+    const stock = await query(`
+      SELECT ws.*,
+        m.name AS material_name, m.sku, m.uom, m.category, m.image_url,
+        w.name AS warehouse_name, w.code AS warehouse_code, w.type AS warehouse_type
+      FROM warehouse_stock ws
+      JOIN materials m   ON m.id = ws.material_id
+      JOIN warehouses w  ON w.id = ws.warehouse_id
+      WHERE w.assigned_project_id = $1
+        ${authorizedCompanyId ? `AND ws.company_id = ${authorizedCompanyId}` : ''}
+        AND ws.qty_available > 0
+      ORDER BY w.name, m.name ASC
+    `, [project_id]);
+
+    // Summary by warehouse type
+    const summary = await query(`
+      SELECT w.type AS warehouse_type, w.name AS warehouse_name,
+        COUNT(DISTINCT ws.material_id) AS material_count,
+        COALESCE(SUM(ws.qty_available), 0) AS total_qty,
+        COALESCE(SUM(ws.qty_available * COALESCE(m.standard_cost, 0)), 0) AS total_value
+      FROM warehouse_stock ws
+      JOIN warehouses w ON w.id = ws.warehouse_id
+      JOIN materials m  ON m.id = ws.material_id
+      WHERE w.assigned_project_id = $1
+        ${authorizedCompanyId ? `AND ws.company_id = ${authorizedCompanyId}` : ''}
+      GROUP BY w.id, w.type, w.name
+      ORDER BY w.name ASC
+    `, [project_id]);
+
+    // Recent movements for project
+    const movements = await query(`
+      SELECT im.*,
+        m.name AS material_name, m.sku,
+        sw.name AS source_name,
+        dw.name AS dest_name,
+        CONCAT(u.first_name,' ',u.last_name) AS performed_by_name
+      FROM inventory_movements im
+      LEFT JOIN materials m   ON m.id = im.material_id
+      LEFT JOIN warehouses sw ON sw.id = im.source_warehouse_id
+      LEFT JOIN warehouses dw ON dw.id = im.destination_warehouse_id
+      LEFT JOIN users u       ON u.id = im.performed_by
+      WHERE (sw.assigned_project_id = $1 OR dw.assigned_project_id = $1)
+      ORDER BY im.created_at DESC
+      LIMIT 50
+    `, [project_id]);
+
+    res.json({
+      success: true,
+      data: {
+        warehouses: warehouses.rows,
+        stock:      stock.rows,
+        summary:    summary.rows,
+        movements:  movements.rows
+      }
+    });
+  } catch (error) { next(error); }
+});
+
+// POST /api/inventory/projects/:project_id/allocate
+// Allocate materials from physical warehouse to project virtual warehouse
+router.post('/projects/:project_id/allocate', async (req, res, next) => {
+  const startTime = Date.now();
+  try {
+    const project_id = parseInt(req.params.project_id);
+    const {
+      company_id, material_id,
+      source_warehouse_id,       // physical warehouse
+      destination_warehouse_id,  // project virtual warehouse
+      movement_type = 'ASSIGN',  // RESERVE, ASSIGN, INSTALLED
+      quantity, notes,
+      assigned_crew_id, assigned_vehicle_id
+    } = req.body;
+
+    if (!material_id || !source_warehouse_id || !destination_warehouse_id || !quantity) {
+      return res.status(400).json({
+        success: false, error: 'validation_error',
+        message: 'Required: material_id, source_warehouse_id, destination_warehouse_id, quantity'
+      });
+    }
+
+    const VALID_TYPES = ['RESERVE','ASSIGN','INSTALLED','RETURN','DAMAGED'];
+    if (!VALID_TYPES.includes(movement_type)) {
+      return res.status(400).json({
+        success: false, error: 'invalid_movement_type',
+        message: `For allocation use: ${VALID_TYPES.join(', ')}`
+      });
+    }
+
+    const qty = parseFloat(quantity);
+    const companyId = parseInt(company_id || req.user.company_id);
+
+    // Verify sufficient stock
+    const stockCheck = await query(`
+      SELECT qty_available FROM warehouse_stock
+      WHERE warehouse_id = $1 AND material_id = $2
+    `, [parseInt(source_warehouse_id), parseInt(material_id)]);
+
+    if (!stockCheck.rows[0] || parseFloat(stockCheck.rows[0].qty_available) < qty) {
+      return res.status(400).json({
+        success: false, error: 'insufficient_stock',
+        message: `Insufficient stock. Available: ${stockCheck.rows[0]?.qty_available || 0}`
+      });
+    }
+
+    const result = await withTransaction(async (client) => {
+      // 1. Create movement
+      const movement = await client.query(`
+        INSERT INTO inventory_movements (
+          material_id, source_warehouse_id, destination_warehouse_id,
+          movement_type, quantity, reference_type, reference_id,
+          notes, performed_by
+        ) VALUES ($1,$2,$3,$4,$5,'project',$6,$7,$8) RETURNING *
+      `, [
+        parseInt(material_id),
+        parseInt(source_warehouse_id),
+        parseInt(destination_warehouse_id),
+        movement_type, qty,
+        project_id, notes || null, req.user.id
+      ]);
+
+      // 2. Deduct from source warehouse
+      await client.query(`
+        UPDATE warehouse_stock SET
+          qty_available = GREATEST(0, qty_available - $1),
+          last_movement = NOW(), updated_at = NOW()
+        WHERE warehouse_id = $2 AND material_id = $3
+      `, [qty, parseInt(source_warehouse_id), parseInt(material_id)]);
+
+      // 3. Add to destination project warehouse
+      await client.query(`
+        INSERT INTO warehouse_stock (warehouse_id, material_id, company_id, qty_available, last_movement)
+        VALUES ($1,$2,$3,$4,NOW())
+        ON CONFLICT (warehouse_id, material_id) DO UPDATE SET
+          qty_available = warehouse_stock.qty_available + $4,
+          last_movement = NOW(), updated_at = NOW()
+      `, [parseInt(destination_warehouse_id), parseInt(material_id), companyId, qty]);
+
+      return movement.rows[0];
+    });
+
+    logger.info(`[Inventory] project allocation ${movement_type} qty=${qty} in ${Date.now()-startTime}ms`);
+
+    writeAudit({
+      userId: req.user.id, action: 'project_allocation',
+      entityType: 'inventory_movements', entityId: result.id,
+      companyId,
+      newValues: { movement_type, quantity: qty, material_id, project_id },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(err => logger.error('[Inventory] audit failed:', err.message));
+
+    res.status(201).json({ success: true, message: `Material ${movement_type.toLowerCase()}ed to project.`, data: result });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;
