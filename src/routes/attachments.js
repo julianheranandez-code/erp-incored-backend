@@ -296,25 +296,42 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(err => logger.error('[Attachments] audit failed:', err.message));
 
-    // Normalize response — support both single and multiple files
+    // Normalize response — maximum frontend compatibility
     const first = savedAttachments[0] || null;
+    const s3Url = first?.is_image ? first?.public_url : null;
 
     res.status(201).json({
       success: true,
       message: `${savedAttachments.length} file(s) uploaded.`,
-      // Use public_url for images (no auth needed in <img src="">)
-      file_url:   first?.file_url   || null,
-      public_url: first?.public_url || null,
-      url:        first?.is_image ? first?.public_url : first?.file_url,
-      path:       first?.path       || null,
-      is_image:   first?.is_image   || false,
+      // Top-level fields — different frontends expect different names
+      image_url:   s3Url,
+      public_url:  first?.public_url || null,
+      preview_url: s3Url,
+      file_url:    first?.file_url   || null,
+      url:         first?.is_image ? first?.public_url : first?.file_url,
+      path:        first?.path       || null,
+      is_image:    first?.is_image   || false,
+      // attachment object (some frontends expect this shape)
+      attachment: first ? {
+        id:          first.id,
+        image_url:   s3Url,
+        public_url:  first.public_url,
+        preview_url: s3Url,
+        file_url:    first.file_url,
+        url:         first.is_image ? first.public_url : first.file_url,
+        mime_type:   first.mime_type,
+        is_image:    first.is_image,
+        path:        first.path
+      } : null,
+      // data object
       data: savedAttachments.length === 1 ? {
         ...first,
-        file_url:   first.file_url,
-        public_url: first.public_url,
-        url:        first.is_image ? first.public_url : first.file_url,
-        path:       first.path,
-        is_image:   first.is_image
+        image_url:   s3Url,
+        public_url:  first.public_url,
+        preview_url: s3Url,
+        url:         first.is_image ? first.public_url : first.file_url,
+        path:        first.path,
+        is_image:    first.is_image
       } : savedAttachments,
       attachments: savedAttachments
     });
