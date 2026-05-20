@@ -43,19 +43,15 @@ const storageAdapter = {
     const key = `${documentType}/${storedFilename}`;
 
     if (USE_S3) {
-      const isImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(storedFilename);
       const putParams = {
         Bucket: BUCKET, Key: key, Body: buffer,
         ContentType: getMime(storedFilename),
         CacheControl: 'public, max-age=31536000'
+        // No ACL — bucket policy handles public read
       };
-      // Public read ACL for material images only
-      if (isImage && documentType === 'material') {
-        putParams.ACL = 'public-read';
-      }
       await s3Client.send(new PutObjectCommand(putParams));
       const publicUrl = `${S3_URL}/${key}`;
-      console.log(`[S3] uploaded: ${key} ACL=${putParams.ACL || 'private'}`);
+      console.log(`[S3] uploaded: ${key}`);
       console.log(`[S3] public url: ${publicUrl}`);
       return { storage_path: key, storage_adapter: 's3', public_url: publicUrl };
     }
