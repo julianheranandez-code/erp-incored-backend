@@ -415,3 +415,4 @@ router.post('/full-inventory-reset', async (req, res, next) => {
 });
 
 module.exports = router;
+// redeploy Wed May 20 14:37:00 CST 2026
