@@ -82,7 +82,8 @@ const DOCUMENT_TYPE_MAP = {
   'materials':    'material',
   'clients':      'client',
   'providers':    'client',    // ← suppliers use same 'client' doc type
-  'suppliers':    'client'     // ← alias
+  'suppliers':    'client',     // ← alias
+  'opportunities': 'opportunity'  // ← NEW
 };
 
 // Attachment categories by document type
@@ -97,7 +98,10 @@ const ATTACHMENT_CATEGORIES = {
   default: ['invoice','receipt','contract','permit','photo','report','other']
 };
 
-const SENSITIVE_DOC_TYPES = ['NDA','MSA','W9','COI','CONTRACT'];
+const SENSITIVE_DOC_TYPES = ['NDA','MSA','W9','COI','CONTRACT','RATE_CARD'];
+
+// Opportunity document categories
+const OPPORTUNITY_DOC_CATEGORIES = ['PURCHASE_ORDER','CONTRACT','AWARD_LETTER','SOW','MSA','CHANGE_ORDER','OTHER'];
 
 // ─── MULTER CONFIG ────────────────────────────────────────────
 const upload = multer({
@@ -147,7 +151,8 @@ async function assertDocumentAccess(documentType, documentId, user) {
     internal_po:   { table: 'internal_purchase_orders', col: 'company_id' },
     project:       { table: 'projects',    col: 'company_id' },
     material:      { table: 'materials',   col: 'company_id' },
-    client:        { table: 'clients',     col: 'company_id' }
+    client:        { table: 'clients',     col: 'company_id' },
+    opportunity:   { table: 'leads',       col: 'company_id' }
     // Note: providers/suppliers also map to 'client' doc type using clients table
   };
 
