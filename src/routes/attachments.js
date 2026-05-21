@@ -74,16 +74,17 @@ const ALLOWED_MIME_TYPES = [
 ];
 
 const DOCUMENT_TYPE_MAP = {
-  'ar-invoices':  'ar_invoice',
-  'ap-bills':     'ap_bill',
-  'expenses':     'expense_report',
-  'internal-pos': 'internal_po',
-  'projects':     'project',
-  'materials':    'material',
-  'clients':      'client',
-  'providers':    'client',    // ← suppliers use same 'client' doc type
-  'suppliers':    'client',     // ← alias
-  'opportunities': 'opportunity'  // ← NEW
+  'ar-invoices':   'ar_invoice',
+  'ap-bills':      'ap_bill',
+  'expenses':      'expense_report',
+  'internal-pos':  'internal_po',
+  'projects':      'project',
+  'materials':     'material',
+  'clients':       'client',
+  'providers':     'client',
+  'suppliers':     'client',
+  'opportunities': 'opportunity',
+  'leads':         'lead'          // ← CRM leads/opportunities
 };
 
 // Attachment categories by document type
@@ -152,7 +153,8 @@ async function assertDocumentAccess(documentType, documentId, user) {
     project:       { table: 'projects',    col: 'company_id' },
     material:      { table: 'materials',   col: 'company_id' },
     client:        { table: 'clients',     col: 'company_id' },
-    opportunity:   { table: 'leads',       col: 'company_id' }
+    opportunity:   { table: 'leads',       col: 'company_id' },
+    lead:          { table: 'leads',       col: 'company_id' }
     // Note: providers/suppliers also map to 'client' doc type using clients table
   };
 

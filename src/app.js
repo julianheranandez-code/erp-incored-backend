@@ -151,6 +151,9 @@ app.use('/api/pmo', pmoRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/admin/cleanup', require('./routes/adminCleanup'));
 app.use('/api', attachmentsRoutes);
+
+// CRM leads attachments alias
+app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
