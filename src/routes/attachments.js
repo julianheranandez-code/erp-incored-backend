@@ -161,9 +161,9 @@ async function assertDocumentAccess(documentType, documentId, user) {
   const resolvedCompanyId = resolveCompanyId(user);
   const recordCompanyId = result.rows[0].company_id || parseInt(resolvedCompanyId);
 
-  logger.info('[ATTACHMENTS] resolvedCompanyId:', resolvedCompanyId);
-  logger.info('[ATTACHMENTS] recordCompanyId:', recordCompanyId);
-  logger.info('[ATTACHMENTS] user role:', user.role);
+  logger.info(`[ATTACHMENTS] resolvedCompanyId: ${resolvedCompanyId}`);
+  logger.info(`[ATTACHMENTS] recordCompanyId: ${recordCompanyId}`);
+  logger.info(`[ATTACHMENTS] user role: ${user.role}`);
 
   if (user.role !== 'admin' && recordCompanyId !== parseInt(resolvedCompanyId)) {
     return { error: 'forbidden' };
@@ -288,9 +288,9 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
           file.buffer, storedFilename, documentType
         );
 
-        logger.info('[ATTACHMENTS INSERT] companyId:', access.companyId);
-        logger.info('[ATTACHMENTS INSERT] documentType:', documentType);
-        logger.info('[ATTACHMENTS INSERT] documentId:', parseInt(id));
+        logger.info(`[ATTACHMENTS INSERT] companyId: ${access.companyId}`);
+        logger.info(`[ATTACHMENTS INSERT] documentType: ${documentType}`);
+        logger.info(`[ATTACHMENTS INSERT] documentId: ${parseInt(id)}`);
 
         const result = await query(`
           INSERT INTO document_attachments (
