@@ -80,7 +80,9 @@ const DOCUMENT_TYPE_MAP = {
   'internal-pos': 'internal_po',
   'projects':     'project',
   'materials':    'material',
-  'clients':      'client'    // ← NEW
+  'clients':      'client',
+  'providers':    'client',    // ← suppliers use same 'client' doc type
+  'suppliers':    'client'     // ← alias
 };
 
 // Attachment categories by document type
@@ -146,6 +148,7 @@ async function assertDocumentAccess(documentType, documentId, user) {
     project:       { table: 'projects',    col: 'company_id' },
     material:      { table: 'materials',   col: 'company_id' },
     client:        { table: 'clients',     col: 'company_id' }
+    // Note: providers/suppliers also map to 'client' doc type using clients table
   };
 
   const mapping = tableMap[documentType];
