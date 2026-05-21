@@ -153,15 +153,15 @@ router.get('/ar-status', async (req, res, next) => {
       `, [...values, parseInt(limit), offset]),
       query(`
         SELECT
-          COUNT(*)                                            AS total_invoices,
-          COALESCE(SUM(total_amount), 0)                     AS total_ar,
+          COUNT(*)                                               AS total_invoices,
+          COALESCE(SUM(total_amount), 0)                        AS total_ar,
           COALESCE(SUM(CASE WHEN calculated_status='overdue' THEN balance_due ELSE 0 END), 0) AS overdue_ar,
-          COALESCE(SUM(CASE WHEN calculated_status='paid' AND actual_payment_date >= date_trunc('month', NOW()) THEN total_amount ELSE 0 END), 0) AS collected_this_month,
-          COALESCE(SUM(balance_due), 0)                      AS pending_payments,
+          COALESCE(SUM(CASE WHEN calculated_status='paid' AND paid_date >= date_trunc('month', NOW()) THEN total_amount ELSE 0 END), 0) AS collected_this_month,
+          COALESCE(SUM(balance_due), 0)                         AS pending_payments,
           COUNT(CASE WHEN payment_gap_status='underpaid' THEN 1 END) AS underpaid_count,
           COUNT(CASE WHEN calculated_status='overdue' THEN 1 END)    AS overdue_count,
-          ROUND(AVG(CASE WHEN actual_payment_date IS NOT NULL AND invoice_date IS NOT NULL
-            THEN actual_payment_date - invoice_date END), 1)         AS avg_days_to_pay
+          ROUND(AVG(CASE WHEN paid_date IS NOT NULL AND issue_date IS NOT NULL
+            THEN paid_date - issue_date END), 1)                AS avg_days_to_pay
         FROM ar_invoice_status ${where}
       `, values)
     ]);
