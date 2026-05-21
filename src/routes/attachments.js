@@ -50,7 +50,16 @@ router.get('/attachments/:id/preview', async (req, res, next) => {
 router.use(verifyToken);
 
 // ─── CONSTANTS ────────────────────────────────────────────────
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB (materials need larger for specs)
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+
+// FIX 1: Enterprise role separation
+// SUPER_ADMIN → delete, force delete, manage sensitive docs
+// ADMIN       → upload, view, download
+// Future: sensitive docs (NDA, MSA, W9, COI, CONTRACT) may require
+//   role-based visibility, restricted downloads, signed URLs (HR/Legal/Payroll)
+const ROLES_CAN_VIEW   = ['admin','super_admin','finance','manager','supervisor','project_manager','operative','technician'];
+const ROLES_CAN_UPLOAD = ['admin','super_admin','finance','manager','supervisor','project_manager','operative','technician'];
+const ROLES_CAN_DELETE = ['admin','super_admin'];
 
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
@@ -117,6 +126,17 @@ function computeChecksum(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+// FIX: resolve company_id from multiple possible user object shapes
+function resolveCompanyId(user) {
+  return parseInt(
+    user.active_company_id ||
+    user.company_id ||
+    user.companyId ||
+    user.selected_company_id ||
+    0
+  ) || null;
+}
+
 async function assertDocumentAccess(documentType, documentId, user) {
   const tableMap = {
     ar_invoice:    { table: 'ar_invoices', col: 'company_id' },
@@ -125,7 +145,7 @@ async function assertDocumentAccess(documentType, documentId, user) {
     internal_po:   { table: 'internal_purchase_orders', col: 'company_id' },
     project:       { table: 'projects',    col: 'company_id' },
     material:      { table: 'materials',   col: 'company_id' },
-    client:        { table: 'clients',     col: 'company_id' }  // ← NEW
+    client:        { table: 'clients',     col: 'company_id' }
   };
 
   const mapping = tableMap[documentType];
@@ -136,10 +156,19 @@ async function assertDocumentAccess(documentType, documentId, user) {
     [documentId]
   );
   if (!result.rows[0]) return { error: 'not_found' };
-  if (user.role !== 'admin' && result.rows[0].company_id !== parseInt(user.company_id)) {
+
+  // FIX: resolve company_id from multiple possible user properties
+  const resolvedCompanyId = resolveCompanyId(user);
+  const recordCompanyId = result.rows[0].company_id || parseInt(resolvedCompanyId);
+
+  logger.info('[ATTACHMENTS] resolvedCompanyId:', resolvedCompanyId);
+  logger.info('[ATTACHMENTS] recordCompanyId:', recordCompanyId);
+  logger.info('[ATTACHMENTS] user role:', user.role);
+
+  if (user.role !== 'admin' && recordCompanyId !== parseInt(resolvedCompanyId)) {
     return { error: 'forbidden' };
   }
-  return { companyId: result.rows[0].company_id };
+  return { companyId: recordCompanyId };
 }
 
 // ─── GET /:kind/:id/attachments ───────────────────────────────
@@ -149,8 +178,8 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
-    // View permissions — inventory team can also view
-    if (!['admin','finance','manager','supervisor','project_manager','operative','technician'].includes(req.user.role)) {
+    // View permissions
+    if (!ROLES_CAN_VIEW.includes(req.user.role)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions.' });
     }
 
@@ -216,8 +245,8 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
-    // Upload permissions — expand for inventory/operations
-    if (!['admin','finance','manager','supervisor','project_manager','operative','technician'].includes(req.user.role)) {
+    // Upload permissions
+    if (!ROLES_CAN_UPLOAD.includes(req.user.role)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Insufficient permissions to upload.' });
     }
 
@@ -258,6 +287,10 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
         const { storage_path, storage_adapter, public_url: storedPublicUrl } = await storageAdapter.save(
           file.buffer, storedFilename, documentType
         );
+
+        logger.info('[ATTACHMENTS INSERT] companyId:', access.companyId);
+        logger.info('[ATTACHMENTS INSERT] documentType:', documentType);
+        logger.info('[ATTACHMENTS INSERT] documentId:', parseInt(id));
 
         const result = await query(`
           INSERT INTO document_attachments (
@@ -379,7 +412,7 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
     if (error.code === 'LIMIT_FILE_SIZE') {
       return res.status(400).json({
         success: false, error: 'file_too_large',
-        message: 'File exceeds 10MB limit.'
+        message: 'File exceeds 20MB limit.'
       });
     }
     next(error);
@@ -403,7 +436,8 @@ router.get('/attachments/:id/download', async (req, res, next) => {
     const attachment = result.rows[0];
 
     // Company isolation check
-    if (req.user.role !== 'admin' && attachment.company_id !== parseInt(req.user.company_id)) {
+    const resolvedCompanyId = resolveCompanyId(req.user);
+    if (req.user.role !== 'admin' && attachment.company_id !== parseInt(resolvedCompanyId)) {
       return res.status(403).json({ success: false, error: 'forbidden' });
     }
 
@@ -431,8 +465,8 @@ router.get('/attachments/:id/download', async (req, res, next) => {
 // ─── DELETE /attachments/:id ──────────────────────────────────
 router.delete('/attachments/:id', async (req, res, next) => {
   try {
-    // Only super_admin can delete
-    if (!['admin'].includes(req.user.role)) {
+    // FIX 1: super_admin or admin can delete
+    if (!ROLES_CAN_DELETE.includes(req.user.role)) {
       return res.status(403).json({
         success: false, error: 'forbidden',
         message: 'Only administrators can delete attachments.'
