@@ -144,6 +144,7 @@ app.use('/api/tasks',        tasksRoutes);
 app.use('/api/companies',   companiesRoutes);
 app.use('/api/finance',     financeRoutes);
 app.use('/api/ar-invoices', arInvoicesRoutes);
+app.use('/api/ar', require('./routes/arInvoicesV3'));
 app.use('/api/internal-pos', internalPOsRoutes);
 app.use('/api/ap-bills', apBillsRoutes);
 app.use('/api/expenses', expensesRoutes);
