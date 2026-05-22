@@ -7,6 +7,13 @@ const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { setImmediate } = require('timers');
 const logger = require('../utils/logger');
+const {
+  checkDuplicatePayment,
+  validateFinancialOperation,
+  syncArTreasuryForecast,
+  assertPeriodOpen,
+  buildAuditPayload
+} = require('../services/financialHelpers');
 
 router.use(verifyToken);
 
@@ -232,6 +239,20 @@ router.post('/payments', async (req, res, next) => {
     const received = parseFloat(amount_received);
     const applied  = parseFloat(applied_amount || amount_received);
 
+    // PART 3: Idempotency — check duplicate payment
+    if (payment_reference) {
+      const dup = await query(
+        `SELECT id FROM ar_payments WHERE invoice_id=$1 AND payment_reference=$2 AND ABS(amount-$3)<0.01 AND payment_date=$4`,
+        [parseInt(invoice_id), payment_reference, received, payment_date]
+      );
+      if (dup.rows[0]) {
+        return res.status(409).json({
+          success: false, error: 'duplicate_payment',
+          message: 'Possible duplicate payment detected. Same reference, amount, and date already exist for this invoice.'
+        });
+      }
+    }
+
     const result = await withTransaction(async (client) => {
       // 1. Create payment
       const payment = await client.query(`
@@ -315,33 +336,73 @@ router.get('/unmatched-transactions', async (req, res, next) => {
 });
 
 // ─── AR ALERTS ───────────────────────────────────────────────
+// PART 1: 100% parameterized — no SQL interpolation
 
 router.get('/ar-alerts', async (req, res, next) => {
   try {
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
-    const companyFilter = authorizedCompanyId ? `AND company_id = ${authorizedCompanyId}` : '';
+    const params = authorizedCompanyId ? [authorizedCompanyId] : [];
+    const cf = authorizedCompanyId ? `AND company_id = $1` : '';
 
     const result = await query(`
       SELECT
         'overdue'        AS alert_type, 'critical' AS severity,
         COUNT(*)         AS count,
-        SUM(balance_due) AS total_amount
-      FROM ar_invoice_status WHERE calculated_status = 'overdue' ${companyFilter}
+        COALESCE(SUM(balance_due), 0) AS total_amount
+      FROM ar_invoice_status WHERE calculated_status = 'overdue' ${cf}
       UNION ALL
-      SELECT 'underpaid','warning',COUNT(*),SUM(gap_amount)
-      FROM ar_invoice_status WHERE payment_gap_status = 'underpaid' ${companyFilter}
+      SELECT 'underpaid','warning',COUNT(*),COALESCE(SUM(gap_amount),0)
+      FROM ar_invoice_status WHERE payment_gap_status = 'underpaid' ${cf}
       UNION ALL
-      SELECT 'overpaid','info',COUNT(*),SUM(ABS(gap_amount))
-      FROM ar_invoice_status WHERE payment_gap_status = 'overpaid' ${companyFilter}
+      SELECT 'overpaid','info',COUNT(*),COALESCE(SUM(ABS(gap_amount)),0)
+      FROM ar_invoice_status WHERE payment_gap_status = 'overpaid' ${cf}
       UNION ALL
-      SELECT 'disputed','warning',COUNT(*),SUM(total_amount)
-      FROM ar_invoice_status WHERE calculated_status = 'disputed' ${companyFilter}
+      SELECT 'disputed','warning',COUNT(*),COALESCE(SUM(total_amount),0)
+      FROM ar_invoice_status WHERE calculated_status = 'disputed' ${cf}
       UNION ALL
-      SELECT 'unmatched_payments','info',COUNT(*),SUM(amount)
-      FROM bank_transactions WHERE match_status = 'unmatched' ${companyFilter.replace('company_id','company_id')}
-    `);
+      SELECT 'unmatched_payments','info',COUNT(*),COALESCE(SUM(amount),0)
+      FROM bank_transactions WHERE match_status = 'unmatched' ${cf}
+    `, params);
 
     res.json({ success: true, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// ─── AR MATCH TRANSACTION ─────────────────────────────────────
+// PART 2: Generic document matching for AR (same as AP)
+router.post('/match-transaction', async (req, res, next) => {
+  try {
+    const { bank_transaction_id, document_id, document_type } = req.body;
+    if (!bank_transaction_id || !document_id || !document_type) {
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: bank_transaction_id, document_id, document_type' });
+    }
+
+    const VALID_TYPES = ['ar_invoice','ap_bill','payroll','journal_entry','treasury_transfer','tax_payment'];
+    if (!VALID_TYPES.includes(document_type)) {
+      return res.status(400).json({ success: false, error: 'invalid_document_type',
+        message: `Valid types: ${VALID_TYPES.join(', ')}` });
+    }
+
+    await query(`
+      UPDATE bank_transactions SET
+        match_status          = 'matched',
+        applied_document_id   = $1,
+        applied_document_type = $2,
+        applied_invoice_id    = CASE WHEN $2 IN ('ar_invoice','ap_bill') THEN $1 ELSE applied_invoice_id END
+      WHERE id = $3
+    `, [parseInt(document_id), document_type, parseInt(bank_transaction_id)]);
+
+    writeAudit({
+      userId: req.user.id, action: 'bank_transaction_matched',
+      entityType: 'bank_transactions', entityId: parseInt(bank_transaction_id),
+      companyId: req.user.company_id,
+      newValues: { document_id, document_type },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[TREASURY] txn=${bank_transaction_id} matched to ${document_type}=${document_id}`);
+    res.json({ success: true, message: 'Transaction matched.' });
   } catch (error) { next(error); }
 });
 
