@@ -147,6 +147,7 @@ app.use('/api/ar-invoices', arInvoicesRoutes);
 app.use('/api/ar', require('./routes/arInvoicesV3'));
 app.use('/api/internal-pos', internalPOsRoutes);
 app.use('/api/ap-bills', apBillsRoutes);
+app.use('/api/ap', require('./routes/apV2'));
 app.use('/api/expenses', expensesRoutes);
 app.use('/api/pmo', pmoRoutes);
 app.use('/api/inventory', inventoryRoutes);
