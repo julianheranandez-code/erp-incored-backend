@@ -23,40 +23,10 @@ function getAuthorizedCompanyId(user, queryCompanyId) {
 }
 
 // ─── PART 1: Vendor/Provider separation ──────────────────────
-// Use is_vendor flag — backward compatible with existing vendor_id
 const VENDOR_JOIN = `LEFT JOIN clients c ON c.id = bs.vendor_id`;
 const VENDOR_JOIN_RAW = `LEFT JOIN clients c ON c.id = b.vendor_id`;
 
-// ─── PART 2: Generic document matching helper ─────────────────
-async function matchBankTransaction(txnId, documentId, documentType) {
-  const VALID_TYPES = ['ar_invoice','ap_bill','payroll','journal_entry','treasury_transfer','tax_payment'];
-  if (!VALID_TYPES.includes(documentType)) throw new Error(`Invalid document_type: ${documentType}`);
-  await query(`
-    UPDATE bank_transactions SET
-      match_status = 'matched',
-      applied_document_id   = $1,
-      applied_document_type = $2,
-      -- backward compat: keep applied_invoice_id for ar/ap
-      applied_invoice_id = CASE WHEN $2 IN ('ar_invoice','ap_bill') THEN $1 ELSE applied_invoice_id END
-    WHERE id = $3
-  `, [parseInt(documentId), documentType, parseInt(txnId)]);
-  logger.info(`[TREASURY] txn=${txnId} matched to ${documentType}=${documentId}`);
-}
-
-// ─── PART 3: Payment idempotency check ───────────────────────
-async function checkDuplicatePayment(table, documentCol, documentId, reference, amount, date) {
-  if (!reference) return null;
-  const result = await query(`
-    SELECT id FROM ${table}
-    WHERE ${documentCol} = $1
-      AND payment_reference = $2
-      AND ABS(amount_paid - $3) < 0.01
-      AND payment_date = $4
-  `, [parseInt(documentId), reference, parseFloat(amount), date]);
-  return result.rows[0] || null;
-}
-
-// ─── PART 4: Approval enforcement ────────────────────────────
+// ─── PART 4: Local approval check (not in shared helpers) ────
 async function assertApprovalAllowed(billId) {
   const result = await query(
     `SELECT approval_required, approval_status FROM ap_bills WHERE id = $1`,
@@ -85,19 +55,6 @@ function isRetainageEligible(bill) {
   if (bill.retainage_status !== 'pending') return false;
   if (!bill.retainage_due_date) return true;
   return new Date(bill.retainage_due_date) <= new Date();
-}
-
-// ─── PART 3: Treasury forecast hook (fire-and-forget) ─────────
-async function syncApTreasuryForecast(apBillId, reason) {
-  try {
-    const bill = await query(`SELECT * FROM ap_bills WHERE id = $1`, [apBillId]);
-    if (!bill.rows[0]) return;
-    const b = bill.rows[0];
-    logger.info(`[TREASURY] AP forecast sync bill=${apBillId} reason=${reason} status=${b.status} scheduled=${b.scheduled_payment_date}`);
-    // Future: insert into treasury_forecast_events
-  } catch (err) {
-    logger.error(`[TREASURY] sync failed bill=${apBillId}: ${err.message}`);
-  }
 }
 
 // ─── GET /api/ap/vendors ─────────────────────────────────────
