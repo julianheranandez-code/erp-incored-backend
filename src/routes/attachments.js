@@ -15,13 +15,25 @@ const storageAdapter = require('../services/storageAdapter');
 const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
 const ALLOWED_IMAGE_TYPES = ['image/jpeg','image/jpg','image/png','image/webp','image/gif'];
 
-// ─── PUBLIC PREVIEW (no auth) ────────────────────────────────
-// Redirects to S3 public URL — no local filesystem
+// ─── FINAL ISSUE 1: Public preview access rules ───────────────
+// STRICT WHITELIST: Only materials use public preview
+// Everything else requires authenticated access
+const SAFE_PUBLIC_PREVIEW_TYPES = ['material'];
+
+function canUsePublicPreview(documentType) {
+  return SAFE_PUBLIC_PREVIEW_TYPES.includes(documentType);
+}
+
+// ─── PREVIEW ENDPOINT ─────────────────────────────────────────
+// FINAL ISSUE 1: ALL employee docs require auth
+// Only materials + non-employee non-sensitive images use public redirect
 router.get('/attachments/:id/preview', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id);
     const result = await query(
-      'SELECT id, mime_type, storage_path, storage_adapter, original_filename FROM document_attachments WHERE id = $1 AND is_deleted = FALSE',
+      `SELECT id, mime_type, storage_path, storage_adapter, original_filename,
+              document_type, document_category, company_id
+       FROM document_attachments WHERE id = $1 AND is_deleted = FALSE`,
       [id]
     );
 
@@ -35,10 +47,28 @@ router.get('/attachments/:id/preview', async (req, res, next) => {
       return res.status(415).json({ success: false, error: 'not_image' });
     }
 
-    // Use storageAdapter to get correct public URL
-    const storageAdapter = require('../services/storageAdapter');
-    const publicUrl = storageAdapter.getPublicUrl(attachment.storage_path, attachment.storage_adapter);
-    logger.info(`[PREVIEW] id=${id} adapter=${attachment.storage_adapter} → redirect: ${publicUrl}`);
+    // FINAL ISSUE 1: Employee docs ALWAYS require auth — no exceptions
+    if (attachment.document_type === 'employee') {
+      return res.status(403).json({
+        success: false,
+        error: 'access_forbidden',
+        message: 'Employee documents require authenticated access. Use GET /api/attachments/:id/download with Bearer token.'
+      });
+    }
+
+    // Strict whitelist: only materials use public preview
+    if (!canUsePublicPreview(attachment.document_type)) {
+      return res.status(403).json({
+        success: false,
+        error: 'access_forbidden',
+        message: 'This document requires authenticated access. Use GET /api/attachments/:id/download with Bearer token.'
+      });
+    }
+
+    // Safe public redirect — materials + non-sensitive operational images
+    const storageAdapterSvc = require('../services/storageAdapter');
+    const publicUrl = storageAdapterSvc.getPublicUrl(attachment.storage_path, attachment.storage_adapter);
+    logger.info(`[PREVIEW] id=${id} type=${attachment.document_type} adapter=${attachment.storage_adapter} → public redirect`);
 
     return res.redirect(302, publicUrl);
   } catch (error) {
@@ -84,7 +114,8 @@ const DOCUMENT_TYPE_MAP = {
   'providers':     'client',
   'suppliers':     'client',
   'opportunities': 'opportunity',
-  'leads':         'lead'          // ← CRM leads/opportunities
+  'leads':         'lead',
+  'employees':     'employee'    // ← NEW
 };
 
 // Attachment categories by document type
@@ -134,6 +165,26 @@ function computeChecksum(buffer) {
 }
 
 // FIX: resolve company_id from multiple possible user object shapes
+// ─── HR SENSITIVE DOCUMENT TYPES ─────────────────────────────
+// PATCH 2: Only admin/finance can access these for employees
+const HR_SENSITIVE_DOC_TYPES = [
+  'RFC','CURP','IMSS','TAX_ID','W7','W9','NDA','CONTRACT',
+  'INSURANCE','PAYROLL_SUPPORT','WORK_AUTHORIZATION','identification',
+  'tax_document','contract','payroll_support'
+];
+
+const HR_AUTHORIZED_ROLES = ['admin','super_admin','finance'];
+
+// FIX 2: Roles that bypass company-level restrictions
+const COMPANY_ACCESS_BYPASS_ROLES = ['admin', 'super_admin', 'finance'];
+
+// FIX 3: Normalized case-insensitive sensitive doc check
+function isSensitiveEmployeeDoc(documentType, documentCategory) {
+  if (documentType !== 'employee') return false;
+  const cat = String(documentCategory || '').trim().toUpperCase();
+  return HR_SENSITIVE_DOC_TYPES.map(t => t.toUpperCase()).includes(cat);
+}
+
 function resolveCompanyId(user) {
   return parseInt(
     user.active_company_id ||
@@ -145,6 +196,28 @@ function resolveCompanyId(user) {
 }
 
 async function assertDocumentAccess(documentType, documentId, user) {
+  const resolvedCompanyId = resolveCompanyId(user);
+
+  // PATCH 1: Employee access — multi-company isolation
+  if (documentType === 'employee') {
+    const result = await query(
+      `SELECT id FROM employees WHERE id = $1`,
+      [parseInt(documentId)]
+    );
+    if (!result.rows[0]) return { error: 'not_found' };
+
+    // Validate user has access via at least one company profile
+    if (!COMPANY_ACCESS_BYPASS_ROLES.includes(user.role)) {
+      const access = await query(`
+        SELECT 1 FROM employee_company_profiles ecp
+        WHERE ecp.emp_id = $1 AND ecp.company_id = $2
+        LIMIT 1
+      `, [parseInt(documentId), resolvedCompanyId]);
+      if (!access.rows[0]) return { error: 'forbidden' };
+    }
+    return { companyId: resolvedCompanyId };
+  }
+
   const tableMap = {
     ar_invoice:    { table: 'ar_invoices', col: 'company_id' },
     ap_bill:       { table: 'ap_bills',    col: 'company_id' },
@@ -163,19 +236,17 @@ async function assertDocumentAccess(documentType, documentId, user) {
 
   const result = await query(
     `SELECT ${mapping.col} AS company_id FROM ${mapping.table} WHERE id = $1`,
-    [documentId]
+    [parseInt(documentId)]
   );
   if (!result.rows[0]) return { error: 'not_found' };
 
-  // FIX: resolve company_id from multiple possible user properties
-  const resolvedCompanyId = resolveCompanyId(user);
   const recordCompanyId = result.rows[0].company_id || parseInt(resolvedCompanyId);
 
   logger.info(`[ATTACHMENTS] resolvedCompanyId: ${resolvedCompanyId}`);
   logger.info(`[ATTACHMENTS] recordCompanyId: ${recordCompanyId}`);
   logger.info(`[ATTACHMENTS] user role: ${user.role}`);
 
-  if (user.role !== 'admin' && recordCompanyId !== parseInt(resolvedCompanyId)) {
+  if (!COMPANY_ACCESS_BYPASS_ROLES.includes(user.role) && recordCompanyId !== parseInt(resolvedCompanyId)) {
     return { error: 'forbidden' };
   }
   return { companyId: recordCompanyId };
@@ -202,6 +273,46 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
 
     const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
 
+    // PATCH 2: HR sensitive document RBAC — employee docs only
+    if (documentType === 'employee' && !HR_AUTHORIZED_ROLES.includes(req.user.role)) {
+      // Non-HR roles: filter out sensitive docs using normalized check
+      const result = await query(`
+        SELECT a.id, a.original_filename, a.stored_filename,
+          a.mime_type, a.file_size, a.document_category,
+          a.storage_path, a.storage_adapter, a.uploaded_at,
+          a.expiration_date, a.notes,
+          COALESCE(a.is_sensitive, FALSE) AS is_sensitive,
+          a.is_verified, a.verified_at, a.verification_notes,
+          CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
+        FROM document_attachments a
+        LEFT JOIN users u ON u.id = a.uploaded_by
+        WHERE a.document_type = $1 AND a.document_id = $2
+          AND a.is_deleted = FALSE
+          AND (a.is_sensitive = FALSE OR a.is_sensitive IS NULL)
+          AND UPPER(COALESCE(a.document_category,'')) != ALL($3::text[])
+        ORDER BY a.uploaded_at DESC
+      `, [documentType, parseInt(id), HR_SENSITIVE_DOC_TYPES.map(t => t.toUpperCase())]);
+
+      const attachments = result.rows.map(a => {
+        const isImage = ALLOWED_IMAGE_TYPES.includes(a.mime_type);
+        const downloadUrl = `${BASE_URL}/api/attachments/${a.id}/download`;
+        return {
+          ...a,
+          file_url:     downloadUrl,
+          // V8 SEMANTIC: employee docs never have public_url
+          public_url:   null,
+          preview_url:  null,
+          url:          downloadUrl,
+          path:         a.storage_path,
+          is_image:     isImage,
+          requires_auth: true
+        };
+      });
+
+      return res.json({ success: true, count: attachments.length, data: attachments });
+    }
+
+    // Standard query for non-employee or HR-authorized roles
     const result = await query(`
       SELECT
         a.id, a.original_filename, a.stored_filename,
@@ -210,6 +321,7 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
         a.uploaded_at, a.cfdi_uuid, a.cfdi_validated,
         a.expiration_date, a.notes,
         COALESCE(a.is_sensitive, FALSE) AS is_sensitive,
+        a.is_verified, a.verified_at, a.verification_notes,
         CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
       FROM document_attachments a
       LEFT JOIN users u ON u.id = a.uploaded_by
@@ -222,16 +334,24 @@ router.get('/:kind/:id/attachments', async (req, res, next) => {
     // Add frontend-compatible URL fields
     const attachments = result.rows.map(a => {
       const isImage   = ALLOWED_IMAGE_TYPES.includes(a.mime_type);
-      const publicUrl  = storageAdapter.getPublicUrl(a.storage_path, a.storage_adapter, a.mime_type);
       const downloadUrl = `${BASE_URL}/api/attachments/${a.id}/download`;
+
+      // FINAL ISSUE 2: ALL employee docs require auth — no public URLs
+      const isSensitiveEmpDoc = documentType === 'employee'; // entire employee namespace locked
+      const publicUrl = (!isSensitiveEmpDoc && isImage)
+        ? storageAdapter.getPublicUrl(a.storage_path, a.storage_adapter, a.mime_type)
+        : downloadUrl;
+
       return {
         ...a,
         file_url:    downloadUrl,
-        public_url:  isImage ? publicUrl : downloadUrl,
-        preview_url: isImage ? publicUrl : null,
-        url:         isImage ? publicUrl : downloadUrl,
+        // V8 SEMANTIC CLEANUP: employee docs → public_url=null (not a public URL)
+        public_url:  isSensitiveEmpDoc ? null : (isImage ? publicUrl : downloadUrl),
+        preview_url: isSensitiveEmpDoc ? null : (isImage ? publicUrl : null),
+        url:         isSensitiveEmpDoc ? downloadUrl : (isImage ? publicUrl : downloadUrl),
         path:        a.storage_path,
-        is_image:    isImage
+        is_image:    isImage,
+        requires_auth: isSensitiveEmpDoc
       };
     });
 
@@ -327,20 +447,24 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
         const att = result.rows[0];
         const isImage = ALLOWED_IMAGE_TYPES.includes(att.mime_type);
         // S3 URL if uploaded to S3, otherwise local
-        const publicUrl = storedPublicUrl;
+        const rawPublicUrl = storedPublicUrl;
+        const downloadUrl  = `${BASE_URL}/api/attachments/${att.id}/download`;
+
+        // FINAL ISSUE 2: ALL employee docs require auth — no profile photo exceptions
+        const isSensitiveEmp = documentType === 'employee'; // ALL employee docs locked down
 
         logger.info(`[UPLOAD] storage_adapter=${att.storage_adapter} storage_path=${att.storage_path}`);
-        logger.info(`[S3] public url: ${publicUrl}`);
-        logger.info(`[FRONTEND IMG SRC]: ${isImage ? publicUrl : 'N/A (not image)'}`);
+        logger.info(`[S3] public url: ${isSensitiveEmp ? '(employee doc - suppressed)' : rawPublicUrl}`);
 
         savedAttachments.push({
           ...att,
-          file_url:    `${BASE_URL}/api/attachments/${att.id}/download`,
-          public_url:  isImage ? publicUrl : `${BASE_URL}/api/attachments/${att.id}/download`,
-          preview_url: isImage ? publicUrl : null,
-          url:         isImage ? publicUrl : `${BASE_URL}/api/attachments/${att.id}/download`,
-          path:        att.storage_path,
-          is_image:    isImage
+          file_url:      downloadUrl,
+          public_url:    isSensitiveEmp ? null : (isImage ? rawPublicUrl : downloadUrl),
+          preview_url:   isSensitiveEmp ? null : (isImage ? rawPublicUrl : null),
+          url:           isSensitiveEmp ? downloadUrl : (isImage ? rawPublicUrl : downloadUrl),
+          path:          att.storage_path,
+          is_image:      isImage,
+          requires_auth: isSensitiveEmp || false
         });
         logger.info(`[Attachments] Saved: ${file.originalname} (${file.size} bytes)`);
       } catch (fileErr) {
@@ -445,10 +569,20 @@ router.get('/attachments/:id/download', async (req, res, next) => {
 
     const attachment = result.rows[0];
 
-    // Company isolation check
+    // Company isolation check — FIX 2: use COMPANY_ACCESS_BYPASS_ROLES
     const resolvedCompanyId = resolveCompanyId(req.user);
-    if (req.user.role !== 'admin' && attachment.company_id !== parseInt(resolvedCompanyId)) {
+    if (!COMPANY_ACCESS_BYPASS_ROLES.includes(req.user.role) && attachment.company_id !== parseInt(resolvedCompanyId)) {
       return res.status(403).json({ success: false, error: 'forbidden' });
+    }
+
+    // FIX 3: HR sensitive document protection — normalized case-insensitive check
+    if (isSensitiveEmployeeDoc(attachment.document_type, attachment.document_category) &&
+        !HR_AUTHORIZED_ROLES.includes(req.user.role)) {
+      logger.warn(`[ATTACHMENTS] Unauthorized sensitive doc access attempt: user=${req.user.id} doc=${id} category=${attachment.document_category}`);
+      return res.status(403).json({
+        success: false, error: 'sensitive_document_access_denied',
+        message: 'Access to this document requires HR/Finance authorization.'
+      });
     }
 
     const buffer = await storageAdapter.read(attachment.storage_path, attachment.storage_adapter);
