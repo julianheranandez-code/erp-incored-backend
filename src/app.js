@@ -164,6 +164,9 @@ app.use('/api',              reportsRoutes);       // /api/reports/*, /api/dashb
 app.use('/api/files',        filesRoutes);
 
 // ─── 404 & Error Handlers ─────────────────────────────────────────────────────
+app.use("/api/workforce", require("./routes/workforce"));
+app.use("/api/iam", require("./routes/iam"));
+
 app.use(notFoundHandler);
 
 if (process.env.SENTRY_DSN) {
@@ -176,5 +179,3 @@ if (process.env.SENTRY_DSN) {
 app.use(errorHandler);
 
 module.exports = app;
-app.use('/api/workforce', require('./routes/workforce'));
-app.use('/api/iam', require('./routes/iam'));
