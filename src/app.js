@@ -176,3 +176,5 @@ if (process.env.SENTRY_DSN) {
 app.use(errorHandler);
 
 module.exports = app;
+app.use('/api/workforce', require('./routes/workforce'));
+app.use('/api/iam', require('./routes/iam'));
