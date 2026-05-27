@@ -267,6 +267,91 @@ router.get('/users', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── PATCH /api/iam/users/:id ────────────────────────────────
+router.patch('/users/:id', async (req, res, next) => {
+  if (!assertIamAdmin(req, res)) return;
+  try {
+    const targetId = req.params.id;
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
+    // Fetch current user
+    const current = await query(`SELECT id, email, status, company_id, role FROM users WHERE id = $1`, [targetId]);
+    if (!current.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const target = current.rows[0];
+
+    // Company isolation — non-super_admin cannot edit across companies
+    if (authorizedCompanyId && target.company_id !== authorizedCompanyId) {
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'You can only edit users in your company.' });
+    }
+
+    const { first_name, last_name, phone, status, must_change_password, email } = req.body;
+
+    // Allowed fields only
+    const VALID_STATUSES = ['active','inactive'];
+    if (status && !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `Status must be one of: ${VALID_STATUSES.join(', ')}` });
+    }
+
+    // Safety: prevent super_admin corruption
+    if (target.role === 'super_admin' && !getEffectiveRoles(req.user).includes('super_admin')) {
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'Only super_admin can edit another super_admin.' });
+    }
+
+    // Email uniqueness check
+    if (email && email.toLowerCase() !== target.email) {
+      const emailCheck = await query(`SELECT id FROM users WHERE email = $1 AND id != $2`,
+        [email.toLowerCase(), targetId]);
+      if (emailCheck.rows[0]) {
+        return res.status(409).json({ success: false, error: 'email_exists',
+          message: 'Email already registered to another user.' });
+      }
+    }
+
+    // Build dynamic update
+    const setClauses = [];
+    const values = [];
+    let idx = 1;
+
+    const allowed = { first_name, last_name, phone, status, must_change_password,
+                      email: email ? email.toLowerCase() : undefined };
+
+    for (const [field, val] of Object.entries(allowed)) {
+      if (val !== undefined) {
+        setClauses.push(`${field} = $${idx++}`);
+        values.push(val);
+      }
+    }
+
+    if (setClauses.length === 0) {
+      return res.status(400).json({ success: false, error: 'no_fields', message: 'No valid fields to update.' });
+    }
+
+    setClauses.push(`updated_at = NOW()`);
+    values.push(targetId);
+
+    const result = await query(
+      `UPDATE users SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING id, email, first_name, last_name, phone, status, role, company_id, updated_at`,
+      values
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'user_updated',
+      entityType: 'users', entityId: targetId,
+      companyId: authorizedCompanyId || target.company_id,
+      oldValues: { email: target.email, status: target.status },
+      newValues: req.body,
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] user updated: ${targetId} by=${req.user.id}`);
+    res.json({ success: true, message: 'User updated.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
 // ─── POST /api/iam/users ──────────────────────────────────────
 router.post('/users', async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
