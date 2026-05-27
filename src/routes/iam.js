@@ -368,13 +368,11 @@ router.post('/users', async (req, res, next) => {
         message: 'Required: email, password, first_name, last_name' });
     }
 
-    // GOVERNANCE FIX: company_id required for all non-super_admin users
-    const isSuperAdminCreation = role === 'super_admin' &&
-      getEffectiveRoles(req.user).includes('super_admin');
-
-    if (!company_id && !isSuperAdminCreation) {
+    // GOVERNANCE FIX: company_id required for ALL users including super_admin
+    // super_admin bypasses SCOPE restrictions only — NOT data integrity
+    if (!company_id) {
       return res.status(400).json({ success: false, error: 'company_required',
-        message: 'company_id is required. All IAM users must belong to a company.' });
+        message: 'company_id is required. All users including super_admin must belong to a company.' });
     }
 
     // Validate company exists
