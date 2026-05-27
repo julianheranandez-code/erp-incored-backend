@@ -45,3 +45,6 @@ uploads/tmp/
 
 # Docker
 .dockerignore
+*.bak
+src/swagger-generator.js
+src/add-swagger-docs.js
