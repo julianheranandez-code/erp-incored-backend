@@ -241,16 +241,17 @@ router.get('/users', async (req, res, next) => {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const result = await query(`
-      SELECT u.id, u.email, CONCAT(u.first_name,' ',u.last_name) AS full_name,
+      SELECT u.id, u.email,
+        u.first_name, u.last_name,
+        CONCAT(u.first_name,' ',u.last_name) AS full_name,
+        u.phone,
         u.role AS legacy_role, u.status, u.company_id, u.last_login_at,
         u.two_fa_enabled, u.created_at,
         c.name AS company_name,
-        -- Aggregate user_roles
         COALESCE(
           ARRAY_AGG(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL AND ur.is_active = TRUE),
           ARRAY[]::text[]
         ) AS roles,
-        -- Company access count
         COUNT(DISTINCT uca.company_id) AS company_access_count
       FROM users u
       LEFT JOIN companies c ON c.id = u.company_id
