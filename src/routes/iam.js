@@ -5,6 +5,7 @@ const router = express.Router();
 const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
+const { iamSensitiveLimiter } = require('../middleware/iamRateLimit');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
@@ -108,7 +109,10 @@ async function assertNotLastAdminRole(userId, roleId) {
 }
 
 function getAuthorizedCompanyId(user, queryCompanyId) {
-  if (getEffectiveRoles(user).some(r => IAM_ADMIN_ROLES.includes(r))) return queryCompanyId ? parseInt(queryCompanyId) : null;
+  const roles = getEffectiveRoles(user);
+  // ONLY super_admin has global bypass — admins are strictly company-scoped
+  if (roles.includes('super_admin')) return queryCompanyId ? parseInt(queryCompanyId) : null;
+  // ALL other roles (including admin) are strictly company-scoped
   return parseInt(user.active_company_id || user.company_id || user.companyId);
 }
 
@@ -329,7 +333,7 @@ router.post('/users', async (req, res, next) => {
 });
 
 // ─── POST /api/iam/users/:id/roles ───────────────────────────
-router.post('/users/:id/roles', async (req, res, next) => {
+router.post('/users/:id/roles', iamSensitiveLimiter, async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
     const userId = req.params.id;
@@ -356,7 +360,7 @@ router.post('/users/:id/roles', async (req, res, next) => {
 });
 
 // ─── DELETE /api/iam/users/:id/roles/:roleId ─────────────────
-router.delete('/users/:id/roles/:roleId', async (req, res, next) => {
+router.delete('/users/:id/roles/:roleId', iamSensitiveLimiter, async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
     const targetUserId = req.params.id;
@@ -422,26 +426,109 @@ router.get('/users/:id/roles', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ─── POST /api/iam/users/:id/company-access ──────────────────
-router.post('/users/:id/company-access', async (req, res, next) => {
+// ─── GET /api/iam/users/:id/company-access ───────────────────
+router.get('/users/:id/company-access', async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
-    const { company_id, access_level = 'standard' } = req.body;
-    if (!company_id) return res.status(400).json({ success: false, error: 'validation_error', message: 'company_id required.' });
+    const result = await query(`
+      SELECT uca.id, uca.user_id, uca.company_id, uca.access_level,
+        uca.created_at AS granted_at, uca.is_active,
+        c.name AS company_name, c.country,
+        CONCAT(u.first_name,' ',u.last_name) AS granted_by_name
+      FROM user_company_access uca
+      JOIN companies c ON c.id = uca.company_id
+      LEFT JOIN users u ON u.id = uca.assigned_by
+      WHERE uca.user_id = $1 AND uca.is_active = TRUE
+      ORDER BY c.name ASC
+    `, [req.params.id]);
+
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// ─── DELETE /api/iam/users/:id/company-access/:companyId ─────
+router.delete('/users/:id/company-access/:companyId', iamSensitiveLimiter, async (req, res, next) => {
+  if (!assertIamAdmin(req, res)) return;
+  try {
+    const userId = req.params.id;
+    const companyId = parseInt(req.params.companyId);
+
+    // Verify record exists
+    const check = await query(
+      `SELECT id FROM user_company_access WHERE user_id = $1 AND company_id = $2 AND is_active = TRUE`,
+      [userId, companyId]
+    );
+    if (!check.rows[0]) {
+      return res.status(404).json({ success: false, error: 'not_found',
+        message: 'Company access record not found.' });
+    }
 
     await query(`
+      UPDATE user_company_access SET is_active = FALSE, revoked_at = NOW()
+      WHERE user_id = $1 AND company_id = $2
+    `, [userId, companyId]);
+
+    writeAudit({
+      userId: req.user.id, action: 'company_access_revoked',
+      entityType: 'user_company_access', entityId: check.rows[0].id,
+      companyId,
+      newValues: { user_id: userId, company_id: companyId },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] company access revoked: user=${userId} company=${companyId} by=${req.user.id}`);
+    res.json({ success: true, message: 'Company access revoked.' });
+  } catch (error) { next(error); }
+});
+
+// ─── POST /api/iam/users/:id/company-access ──────────────────
+router.post('/users/:id/company-access', iamSensitiveLimiter, async (req, res, next) => {
+  if (!assertIamAdmin(req, res)) return;
+  try {
+    const userId = req.params.id;
+    const { company_id, access_level = 'standard' } = req.body;
+
+    if (!company_id) return res.status(400).json({ success: false, error: 'validation_error', message: 'company_id required.' });
+
+    const VALID_LEVELS = ['read_only','standard','elevated','full'];
+    if (!VALID_LEVELS.includes(access_level)) {
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: `access_level must be one of: ${VALID_LEVELS.join(', ')}` });
+    }
+
+    const companyCheck = await query(`SELECT id, name FROM companies WHERE id = $1`, [parseInt(company_id)]);
+    if (!companyCheck.rows[0]) return res.status(404).json({ success: false, error: 'company_not_found' });
+
+    const userCheck = await query(`SELECT id FROM users WHERE id = $1`, [userId]);
+    if (!userCheck.rows[0]) return res.status(404).json({ success: false, error: 'user_not_found' });
+
+    const result = await query(`
       INSERT INTO user_company_access (user_id, company_id, access_level, assigned_by)
       VALUES ($1,$2,$3,$4)
       ON CONFLICT (user_id, company_id) DO UPDATE SET
         access_level = $3, is_active = TRUE, revoked_at = NULL, assigned_by = $4
-    `, [req.params.id, parseInt(company_id), access_level, req.user.id]);
+      RETURNING *
+    `, [userId, parseInt(company_id), access_level, req.user.id]);
 
-    res.json({ success: true, message: 'Company access granted.' });
+    writeAudit({
+      userId: req.user.id, action: 'company_access_granted',
+      entityType: 'user_company_access', entityId: result.rows[0].id,
+      companyId: parseInt(company_id),
+      newValues: { user_id: userId, company_id, access_level,
+                   company_name: companyCheck.rows[0].name },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] company access granted: user=${userId} company=${company_id} level=${access_level} by=${req.user.id}`);
+    res.status(201).json({
+      success: true, message: 'Company access granted.',
+      data: { ...result.rows[0], company_name: companyCheck.rows[0].name }
+    });
   } catch (error) { next(error); }
 });
 
 // ─── POST /api/iam/users/:id/reset-password ──────────────────
-router.post('/users/:id/reset-password', async (req, res, next) => {
+router.post('/users/:id/reset-password', iamSensitiveLimiter, async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
     const { new_password } = req.body;
@@ -473,7 +560,7 @@ router.post('/users/:id/reset-password', async (req, res, next) => {
 });
 
 // ─── PATCH /api/iam/users/:id/deactivate ─────────────────────
-router.patch('/users/:id/deactivate', async (req, res, next) => {
+router.patch('/users/:id/deactivate', iamSensitiveLimiter, async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
     if (req.params.id === req.user.id) {
@@ -501,14 +588,34 @@ router.patch('/users/:id/deactivate', async (req, res, next) => {
     await withTransaction(async (client) => {
       await client.query(`UPDATE users SET status = 'inactive', updated_at = NOW() WHERE id = $1`, [req.params.id]);
       await client.query(`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, [req.params.id]);
-      await client.query(`UPDATE user_roles SET is_active = FALSE, revoked_at = NOW() WHERE user_id = $1`, [req.params.id]);
-    });
 
-    writeAudit({
-      userId: req.user.id, action: 'user_deactivated',
-      entityType: 'users', entityId: req.params.id,
-      ip: req.ip, userAgent: req.get('user-agent')
-    }).catch(() => {});
+      const revokedRoles = await client.query(
+        `UPDATE user_roles SET is_active = FALSE, revoked_at = NOW() WHERE user_id = $1 AND is_active = TRUE RETURNING id`,
+        [req.params.id]
+      );
+
+      // ISSUE 3: Also revoke company access + approval authority
+      const revokedAccess = await client.query(
+        `UPDATE user_company_access SET is_active = FALSE, revoked_at = NOW() WHERE user_id = $1 AND is_active = TRUE RETURNING id`,
+        [req.params.id]
+      );
+      const revokedApprovals = await client.query(
+        `UPDATE approval_authority SET is_active = FALSE, updated_at = NOW() WHERE user_id = $1 AND is_active = TRUE RETURNING id`,
+        [req.params.id]
+      );
+
+      writeAudit({
+        userId: req.user.id, action: 'user_deactivated',
+        entityType: 'users', entityId: req.params.id,
+        companyId: req.user.company_id,
+        newValues: {
+          revoked_roles_count: revokedRoles.rows.length,
+          revoked_company_access_count: revokedAccess.rows.length,
+          revoked_approval_authority_count: revokedApprovals.rows.length
+        },
+        ip: req.ip, userAgent: req.get('user-agent')
+      }).catch(() => {});
+    });
 
     res.json({ success: true, message: 'User deactivated.' });
   } catch (error) { next(error); }
@@ -574,7 +681,7 @@ router.get('/approval-authority', async (req, res, next) => {
 });
 
 // ─── POST /api/iam/approval-authority ────────────────────────
-router.post('/approval-authority', async (req, res, next) => {
+router.post('/approval-authority', iamSensitiveLimiter, async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
     const { user_id, company_id, module, approval_limit,
@@ -621,20 +728,63 @@ router.post('/approval-authority', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── PATCH /api/iam/users/:id/reactivate ─────────────────────
+// ISSUE 4: Reactivate user — does NOT restore governance grants
+router.patch('/users/:id/reactivate', iamSensitiveLimiter, async (req, res, next) => {
+  if (!assertIamAdmin(req, res)) return;
+  try {
+    const userId = req.params.id;
+
+    const userCheck = await query(`SELECT id, status, role FROM users WHERE id = $1`, [userId]);
+    if (!userCheck.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    if (userCheck.rows[0].status === 'active') {
+      return res.status(400).json({ success: false, error: 'already_active', message: 'User is already active.' });
+    }
+
+    // Reactivate user status only
+    // IMPORTANT: Do NOT restore roles, company access, or approval authority
+    // Governance grants must be explicitly reassigned (least-privilege principle)
+    await query(`UPDATE users SET status = 'active', updated_at = NOW() WHERE id = $1`, [userId]);
+
+    writeAudit({
+      userId: req.user.id, action: 'user_reactivated',
+      entityType: 'users', entityId: userId,
+      companyId: req.user.company_id,
+      newValues: { previous_status: userCheck.rows[0].status },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] user reactivated: user=${userId} by=${req.user.id}`);
+    res.json({
+      success: true,
+      message: 'User reactivated. Roles and company access must be reassigned manually.'
+    });
+  } catch (error) { next(error); }
+});
+
 // ─── GET /api/iam/sessions ────────────────────────────────────
+// ISSUE 1: Company-scoped session visibility
 router.get('/sessions', async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
     const { user_id } = req.query;
     const conditions = ['us.revoked_at IS NULL'];
     const values = [];
     let idx = 1;
+
     if (user_id) { conditions.push(`us.user_id = $${idx++}`); values.push(user_id); }
+
+    // ISSUE 1: Filter by company — super_admin sees all, company admin sees own
+    if (authorizedCompanyId) {
+      conditions.push(`u.company_id = $${idx++}`);
+      values.push(authorizedCompanyId);
+    }
 
     const result = await query(`
       SELECT us.*,
         CONCAT(u.first_name,' ',u.last_name) AS user_name,
-        u.email
+        u.email, u.company_id
       FROM user_sessions us
       JOIN users u ON u.id = us.user_id
       WHERE ${conditions.join(' AND ')}
@@ -647,10 +797,46 @@ router.get('/sessions', async (req, res, next) => {
 });
 
 // ─── DELETE /api/iam/sessions/:id ────────────────────────────
+// ISSUE 2: Company-scoped session revocation + audit
 router.delete('/sessions/:id', async (req, res, next) => {
   if (!assertIamAdmin(req, res)) return;
   try {
-    await query(`UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1`, [parseInt(req.params.id)]);
+    const sessionId = parseInt(req.params.id);
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
+    // Fetch session + owner company
+    const sessionCheck = await query(`
+      SELECT us.id, us.user_id, u.company_id
+      FROM user_sessions us
+      JOIN users u ON u.id = us.user_id
+      WHERE us.id = $1 AND us.revoked_at IS NULL
+    `, [sessionId]);
+
+    if (!sessionCheck.rows[0]) {
+      return res.status(404).json({ success: false, error: 'not_found', message: 'Session not found or already revoked.' });
+    }
+
+    const session = sessionCheck.rows[0];
+
+    // ISSUE 2: Company governance check
+    if (authorizedCompanyId && session.company_id !== authorizedCompanyId) {
+      return res.status(403).json({
+        success: false, error: 'permission_denied',
+        message: 'You can only revoke sessions belonging to users in your company.'
+      });
+    }
+
+    await query(`UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1`, [sessionId]);
+
+    writeAudit({
+      userId: req.user.id, action: 'session_revoked',
+      entityType: 'user_sessions', entityId: sessionId,
+      companyId: session.company_id,
+      newValues: { revoked_session_id: sessionId, target_user_id: session.user_id },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] session revoked: session=${sessionId} user=${session.user_id} by=${req.user.id}`);
     res.json({ success: true, message: 'Session revoked.' });
   } catch (error) { next(error); }
 });
