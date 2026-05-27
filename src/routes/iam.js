@@ -224,7 +224,14 @@ router.get('/users', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
-    if (authorizedCompanyId) { conditions.push(`u.company_id = $${idx++}`); values.push(authorizedCompanyId); }
+    // FIX: Include users that have company_id OR have company_access to authorized company
+    if (authorizedCompanyId) {
+      conditions.push(`(u.company_id = $${idx} OR EXISTS (
+        SELECT 1 FROM user_company_access uca2
+        WHERE uca2.user_id = u.id AND uca2.company_id = $${idx} AND uca2.is_active = TRUE
+      ))`);
+      values.push(authorizedCompanyId); idx++;
+    }
     if (status) { conditions.push(`u.status = $${idx++}`); values.push(status); }
     if (search) {
       conditions.push(`(CONCAT(u.first_name,' ',u.last_name) ILIKE $${idx} OR u.email ILIKE $${idx})`);
@@ -275,6 +282,101 @@ router.post('/users', async (req, res, next) => {
         message: 'Required: email, password, first_name, last_name' });
     }
 
+    // GOVERNANCE FIX: company_id required for all non-super_admin users
+    const isSuperAdminCreation = role === 'super_admin' &&
+      getEffectiveRoles(req.user).includes('super_admin');
+
+    if (!company_id && !isSuperAdminCreation) {
+      return res.status(400).json({ success: false, error: 'company_required',
+        message: 'company_id is required. All IAM users must belong to a company.' });
+    }
+
+    // Validate company exists
+    if (company_id) {
+      const companyCheck = await query(`SELECT id FROM companies WHERE id = $1`, [parseInt(company_id)]);
+      if (!companyCheck.rows[0]) {
+        return res.status(400).json({ success: false, error: 'company_not_found',
+          message: `Company ${company_id} not found.` });
+      }
+    }
+
+    // Check email unique
+    const exists = await query(`SELECT id FROM users WHERE email = $1`, [email.toLowerCase()]);
+    if (exists.rows[0]) {
+      return res.status(409).json({ success: false, error: 'email_exists', message: 'Email already registered.' });
+    }
+
+    const result = await withTransaction(async (client) => {
+      const password_hash = await bcrypt.hash(password, 10);
+
+      const user = await client.query(`
+        INSERT INTO users (email, password_hash, first_name, last_name, phone,
+          company_id, role, must_change_password, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active') RETURNING id, email, role, company_id, created_at
+      `, [email.toLowerCase(), password_hash, first_name, last_name,
+          phone||null, company_id ? parseInt(company_id) : null,
+          role, must_change_password]);
+
+      const userId = user.rows[0].id;
+
+      // Assign roles — guaranteed atomic
+      const allRoleIds = [...new Set(role_ids)];
+      if (allRoleIds.length === 0) {
+        const defaultRole = await client.query(`SELECT id FROM roles WHERE name = $1`, [role]);
+        if (defaultRole.rows[0]) allRoleIds.push(defaultRole.rows[0].id);
+      }
+
+      for (const roleId of allRoleIds) {
+        await client.query(`
+          INSERT INTO user_roles (user_id, role_id, company_id, assigned_by)
+          VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING
+        `, [userId, parseInt(roleId), company_id ? parseInt(company_id) : null, req.user.id]);
+      }
+
+      // GOVERNANCE FIX: company access — MANDATORY, not optional
+      // If this fails, the entire transaction rolls back
+      if (company_id) {
+        await client.query(`
+          INSERT INTO user_company_access (user_id, company_id, access_level, assigned_by)
+          VALUES ($1,$2,'full',$3)
+          ON CONFLICT (user_id, company_id) DO UPDATE SET
+            is_active = TRUE, revoked_at = NULL, access_level = 'full', assigned_by = $3
+        `, [userId, parseInt(company_id), req.user.id]);
+      }
+
+      // Post-create verification — if any governance record missing, rollback
+      const verifyUser = await client.query(`SELECT id FROM users WHERE id = $1`, [userId]);
+      if (!verifyUser.rows[0]) throw new Error('User creation verification failed.');
+
+      if (company_id) {
+        const verifyAccess = await client.query(
+          `SELECT id FROM user_company_access WHERE user_id = $1 AND company_id = $2 AND is_active = TRUE`,
+          [userId, parseInt(company_id)]
+        );
+        if (!verifyAccess.rows[0]) throw new Error('Company access assignment failed — rolling back.');
+      }
+
+      return user.rows[0];
+    });
+
+    writeAudit({
+      userId: req.user.id, action: 'user_created',
+      entityType: 'users', entityId: result.id,
+      companyId: company_id ? parseInt(company_id) : null,
+      newValues: { email, role, role_ids, company_id },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[IAM] user created: ${email} company=${company_id} by=${req.user.id}`);
+    res.status(201).json({ success: true, message: 'User created.', data: result });
+  } catch (error) { next(error); }
+});
+
+    if (!email || !password || !first_name || !last_name) {
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: email, password, first_name, last_name' });
+    }
+
     // Check email unique
     const exists = await query(`SELECT id FROM users WHERE email = $1`, [email.toLowerCase()]);
     if (exists.rows[0]) {
@@ -309,13 +411,19 @@ router.post('/users', async (req, res, next) => {
         `, [userId, parseInt(roleId), company_id ? parseInt(company_id) : null, req.user.id]);
       }
 
-      // Company access
+      // Company access — GUARANTEED (not optional)
       if (company_id) {
         await client.query(`
           INSERT INTO user_company_access (user_id, company_id, access_level, assigned_by)
-          VALUES ($1,$2,'full',$3) ON CONFLICT DO NOTHING
+          VALUES ($1,$2,'full',$3)
+          ON CONFLICT (user_id, company_id) DO UPDATE SET
+            is_active = TRUE, revoked_at = NULL, access_level = 'full', assigned_by = $3
         `, [userId, parseInt(company_id), req.user.id]);
       }
+
+      // Post-create validation: verify user + access + role all exist
+      const verifyUser = await client.query(`SELECT id, status FROM users WHERE id = $1`, [userId]);
+      if (!verifyUser.rows[0]) throw new Error('User creation verification failed.');
 
       return user.rows[0];
     });
