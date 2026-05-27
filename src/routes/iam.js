@@ -6,6 +6,7 @@ const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { iamSensitiveLimiter } = require('../middleware/iamRateLimit');
+const { getEffectivePermissions, invalidateEffectivePermissions } = require('../lib/iam/effective-permissions');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
@@ -355,6 +356,7 @@ router.post('/users/:id/roles', iamSensitiveLimiter, async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
+    invalidateEffectivePermissions(userId);
     res.json({ success: true, message: 'Role assigned.' });
   } catch (error) { next(error); }
 });
@@ -404,6 +406,7 @@ router.delete('/users/:id/roles/:roleId', iamSensitiveLimiter, async (req, res, 
     }).catch(() => {});
 
     res.json({ success: true, message: 'Role revoked.' });
+    invalidateEffectivePermissions(targetUserId);
   } catch (error) { next(error); }
 });
 
@@ -838,6 +841,64 @@ router.delete('/sessions/:id', async (req, res, next) => {
 
     logger.info(`[IAM] session revoked: session=${sessionId} user=${session.user_id} by=${req.user.id}`);
     res.json({ success: true, message: 'Session revoked.' });
+  } catch (error) { next(error); }
+});
+
+// ─── GET /api/iam/users/:id/effective-permissions ────────────
+// PART 5: Compute + return final effective permissions
+router.get('/users/:id/effective-permissions', async (req, res, next) => {
+  if (!assertIamAdmin(req, res)) return;
+  try {
+    const targetUserId = req.params.id;
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+
+    // Company-scoped admins can only compute for users in their company
+    if (authorizedCompanyId) {
+      const userCompany = await query(
+        `SELECT company_id FROM users WHERE id = $1`, [targetUserId]
+      );
+      if (userCompany.rows[0]?.company_id !== authorizedCompanyId) {
+        return res.status(403).json({
+          success: false, error: 'permission_denied',
+          message: 'You can only view permissions for users in your company.'
+        });
+      }
+    }
+
+    const effective = await getEffectivePermissions(targetUserId, authorizedCompanyId);
+
+    // OBS 2: Compact mode — omit expanded_permissions for lightweight responses
+    const compact = req.query.compact === 'true';
+    const responseData = compact ? {
+      user_id:            effective.user_id,
+      company_id:         effective.company_id,
+      is_super_admin:     effective.is_super_admin,
+      roles:              effective.roles,
+      effective_permissions: effective.effective_permissions,
+      permission_summary: effective.permission_summary,
+      permission_groups:  effective.permission_groups,
+      denied_permissions: effective.denied_permissions,
+      approval_authority: effective.approval_authority,
+      computed_at:        effective.computed_at
+    } : effective;
+
+    // PART 8: Audit effective permission computation
+    writeAudit({
+      userId: req.user.id, action: 'effective_permissions_computed',
+      entityType: 'users', entityId: targetUserId,
+      companyId: authorizedCompanyId,
+      newValues: {
+        target_user_id: targetUserId,
+        target_company_id: authorizedCompanyId,
+        role_count: effective.roles?.length || 0,
+        permission_count: effective.effective_permissions?.length || 0,
+        deny_count: effective.denied_permissions?.length || 0,
+        compact_mode: compact
+      },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.json({ success: true, data: responseData });
   } catch (error) { next(error); }
 });
 
