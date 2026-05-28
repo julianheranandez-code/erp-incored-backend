@@ -968,15 +968,35 @@ router.delete('/sessions/:id', async (req, res, next) => {
 });
 
 // ─── GET /api/iam/users/:id/effective-permissions ────────────
-// PART 5: Compute + return final effective permissions
 router.get('/users/:id/effective-permissions', async (req, res, next) => {
-  if (!assertIamAdmin(req, res)) return;
+  if (!req.user) return res.status(401).json({ success: false, error: 'unauthorized' });
   try {
     const targetUserId = req.params.id;
-    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const roles = getEffectiveRoles(req.user);
+    const isAdmin = roles.some(r => IAM_ADMIN_ROLES.includes(r));
+    const isSelf = req.user.id === targetUserId;
+
+    // Allow: admin/super_admin OR user viewing their own permissions
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({ success: false, error: 'permission_denied',
+        message: 'You can only view your own permissions.' });
+    }
+
+    const authorizedCompanyId = isAdmin
+      ? getAuthorizedCompanyId(req.user, req.query.company_id)
+      : parseInt(req.user.active_company_id || req.user.company_id);
+
+    // Defensive: regular users must have company context
+    if (!authorizedCompanyId && !isAdmin) {
+      return res.status(403).json({
+        success: false, error: 'company_context_required',
+        message: 'Active company context required.'
+      });
+    }
 
     // Company-scoped admins can only compute for users in their company
-    if (authorizedCompanyId) {
+    // But users can always view their own permissions
+    if (!isSelf && authorizedCompanyId) {
       const userCompany = await query(
         `SELECT company_id FROM users WHERE id = $1`, [targetUserId]
       );
