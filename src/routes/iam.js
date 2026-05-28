@@ -554,7 +554,15 @@ router.get('/users/:id/roles', async (req, res, next) => {
 
 // ─── GET /api/iam/users/:id/company-access ───────────────────
 router.get('/users/:id/company-access', async (req, res, next) => {
-  if (!assertIamAdmin(req, res)) return;
+  const roles = getEffectiveRoles(req.user);
+  const isAdmin = roles.some(r => IAM_ADMIN_ROLES.includes(r));
+  const isSelf = req.user.id === req.params.id;
+
+  // Allow: admin/super_admin OR user viewing their own company access
+  if (!isAdmin && !isSelf) {
+    return res.status(403).json({ success: false, error: 'permission_denied',
+      message: 'You can only view your own company access.' });
+  }
   try {
     const result = await query(`
       SELECT uca.id, uca.user_id, uca.company_id, uca.access_level,
