@@ -47,7 +47,7 @@ const LEGACY_ROLE_PERMISSION_MAP = {
     'ap_bills.approve','ap_bills.apply_payment',
     'treasury.view','treasury.forecast','treasury.reconcile',
     'finance.view','finance.export',
-    'workforce.view','workforce.view_sensitive','workforce.compliance',
+    'workforce.view',  // costos y roster básico para P&L — sin datos sensibles
     'crm.view','audit_logs.view'
   ],
   treasury: [
