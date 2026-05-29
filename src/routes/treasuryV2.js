@@ -91,13 +91,21 @@ router.get('/accounts', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
     const companyId = getCompanyScope(req.user, req.query.company_id);
-    const conditions = ['a.status != $1'];
-    const values = ['closed'];
-    let idx = 2;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    // Default: exclude closed accounts unless status explicitly provided
+    if (req.query.status) {
+      conditions.push(`a.status = $${idx++}`);
+      values.push(req.query.status);
+    } else {
+      conditions.push(`a.status != $${idx++}`);
+      values.push('closed');
+    }
 
     if (companyId) { conditions.push(`a.company_id = $${idx++}`); values.push(companyId); }
     if (req.query.currency) { conditions.push(`a.currency = $${idx++}`); values.push(req.query.currency); }
-    if (req.query.status) { conditions[0] = `a.status = $${idx++}`; values.push(req.query.status); }
 
     const result = await query(`
       SELECT a.*, c.name AS company_name
