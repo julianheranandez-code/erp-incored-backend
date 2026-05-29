@@ -145,7 +145,6 @@ app.use('/api/companies',   companiesRoutes);
 app.use('/api/finance',     financeRoutes);
 app.use('/api/ar-invoices', arInvoicesRoutes);
 app.use('/api/ar', require('./routes/arInvoicesV3'));
-// app.use('/api/treasury', require('./routes/treasury')); // replaced by treasuryV2
 app.use('/api/internal-pos', internalPOsRoutes);
 app.use('/api/ap-bills', apBillsRoutes);
 app.use('/api/ap', require('./routes/apV2'));
@@ -167,6 +166,8 @@ app.use('/api/files',        filesRoutes);
 app.use("/api/workforce", require("./routes/workforce"));
 app.use("/api/iam", require("./routes/iam"));
 
+app.use('/api/treasury', require('./routes/treasuryV2'));
+
 app.use(notFoundHandler);
 
 if (process.env.SENTRY_DSN) {
@@ -179,4 +180,3 @@ if (process.env.SENTRY_DSN) {
 app.use(errorHandler);
 
 module.exports = app;
-app.use('/api/treasury', require('./routes/treasuryV2'));
