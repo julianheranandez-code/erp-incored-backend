@@ -1,17 +1,5 @@
 'use strict';
 
-/**
- * Treasury V2 Routes — Sprint 1A (Hardened)
- * ==========================================
- * ERP V2 Governance Hardening:
- *
- * C1: Permission-driven access (treasury.view/manage) NOT hardcoded roles
- * C2: Balance fields are bootstrap-only — future source: bank_transactions
- * C3: expected_repayment_date for intercompany loan tracking
- * C4: bank_code standardization (BOA, BANORTE, BBVA, etc.)
- * C5: Company isolation — validate company_id against user_company_access
- */
-
 const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../config/database');
@@ -20,10 +8,10 @@ const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
 const logger = require('../utils/logger');
 
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────
 router.use(verifyToken);
 
 // ─── HELPERS ─────────────────────────────────────────────────
-
 function getEffectiveRoles(user) {
   return user.roles?.length ? user.roles : user.role ? [user.role] : [];
 }
@@ -35,25 +23,23 @@ function getCompanyScope(user, queryCompanyId) {
 }
 
 /**
- * C1: Permission-driven treasury access check
- * Uses effective permissions engine — NOT hardcoded role list
+ * Permission-driven treasury access — uses effective permissions engine
+ * Supports: treasury.view / treasury.create / treasury.update / treasury.approve / treasury.admin
  */
 async function assertTreasuryPermission(req, res, permission = 'treasury.view') {
   const roles = getEffectiveRoles(req.user);
-
-  // super_admin always has access
   if (roles.includes('super_admin')) return true;
 
   try {
     const companyId = getCompanyScope(req.user, req.query.company_id);
     const effective = await getEffectivePermissions(req.user.id, companyId);
-
-    // Check exact permission or wildcard (treasury.*)
     const perms = effective.effective_permissions || [];
+
     const hasAccess = perms.includes('*') ||
                       perms.includes(permission) ||
                       perms.includes('treasury.*') ||
-                      perms.some(p => p.endsWith('.*') && permission.startsWith(p.slice(0,-2)));
+                      perms.some(p => p.endsWith('.*') &&
+                        permission.startsWith(p.slice(0, -2) + '.'));
 
     if (!hasAccess) {
       res.status(403).json({ success: false, error: 'permission_denied',
@@ -69,40 +55,45 @@ async function assertTreasuryPermission(req, res, permission = 'treasury.view') 
 }
 
 /**
- * C5: Validate company_id against user's authorized company scope
- * Prevents cross-company treasury record creation
+ * Company isolation — validates company_id against user's authorized scope
+ * Prevents cross-company record creation via payload manipulation
  */
 async function assertCompanyAccess(req, res, companyId) {
   const roles = getEffectiveRoles(req.user);
   if (roles.includes('super_admin')) return true;
 
   const userCompanyId = parseInt(req.user.active_company_id || req.user.company_id);
-
   if (userCompanyId === parseInt(companyId)) return true;
 
-  // Check user_company_access table
-  const access = await query(
-    `SELECT 1 FROM user_company_access WHERE user_id = $1 AND company_id = $2 AND is_active = TRUE`,
-    [req.user.id, parseInt(companyId)]
-  );
+  try {
+    const access = await query(
+      `SELECT 1 FROM user_company_access WHERE user_id = $1 AND company_id = $2 AND is_active = TRUE`,
+      [req.user.id, parseInt(companyId)]
+    );
 
-  if (!access.rows[0]) {
-    res.status(403).json({ success: false, error: 'company_access_denied',
-      message: 'You are not authorized to create treasury records for this company.' });
+    if (!access.rows[0]) {
+      res.status(403).json({ success: false, error: 'company_access_denied',
+        message: 'You are not authorized to create treasury records for this company.' });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.error(`[TREASURY] company access check failed: ${err.message}`);
+    res.status(403).json({ success: false, error: 'company_access_check_failed' });
     return false;
   }
-  return true;
 }
 
 // ─── BANK ACCOUNTS ───────────────────────────────────────────
 
+// GET /api/treasury/accounts
 router.get('/accounts', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
     const companyId = getCompanyScope(req.user, req.query.company_id);
-    const conditions = ["a.status != 'closed'"];
-    const values = [];
-    let idx = 1;
+    const conditions = ['a.status != $1'];
+    const values = ['closed'];
+    let idx = 2;
 
     if (companyId) { conditions.push(`a.company_id = $${idx++}`); values.push(companyId); }
     if (req.query.currency) { conditions.push(`a.currency = $${idx++}`); values.push(req.query.currency); }
@@ -120,13 +111,14 @@ router.get('/accounts', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// POST /api/treasury/accounts
 router.post('/accounts', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.create')) return;
   try {
     const {
-      company_id, bank_name, bank_code, account_name, account_type,
+      company_id, bank_name, account_name, account_type,
       currency, country, account_number_masked, is_primary = false,
-      opening_balance = 0
+      opening_balance = 0, current_balance, available_balance
     } = req.body;
 
     if (!company_id || !bank_name || !account_name || !account_type || !currency || !country) {
@@ -134,29 +126,23 @@ router.post('/accounts', async (req, res, next) => {
         message: 'Required: company_id, bank_name, account_name, account_type, currency, country' });
     }
 
-    // C5: Company isolation
-    if (!await assertCompanyAccess(req, res, company_id)) return;
-
     const VALID_TYPES = ['checking','receivables','payables','savings'];
     const VALID_CURRENCIES = ['USD','MXN'];
     const VALID_COUNTRIES = ['USA','MEXICO'];
 
     if (!VALID_TYPES.includes(account_type))
-      return res.status(400).json({ success: false, error: 'invalid_account_type' });
+      return res.status(400).json({ success: false, error: 'invalid_account_type',
+        message: `account_type must be: ${VALID_TYPES.join(', ')}` });
     if (!VALID_CURRENCIES.includes(currency))
       return res.status(400).json({ success: false, error: 'invalid_currency' });
     if (!VALID_COUNTRIES.includes(country))
       return res.status(400).json({ success: false, error: 'invalid_country' });
 
-    /**
-     * C2: Balance governance note
-     * opening_balance, current_balance, available_balance are BOOTSTRAP fields only.
-     * In Sprint 1B/1C these will be derived from:
-     *   - bank_transactions (source of truth)
-     *   - reconciliation engine
-     * Never treat current_balance as a permanently editable field post-Sprint 1A.
-     */
+    // Fix 1: Company isolation — prevent cross-company payload manipulation
+    if (!await assertCompanyAccess(req, res, company_id)) return;
+
     const result = await withTransaction(async (client) => {
+      // If is_primary, unset existing primary for this company+currency
       if (is_primary) {
         await client.query(
           `UPDATE treasury_bank_accounts SET is_primary = FALSE WHERE company_id = $1 AND currency = $2`,
@@ -166,21 +152,22 @@ router.post('/accounts', async (req, res, next) => {
 
       return await client.query(`
         INSERT INTO treasury_bank_accounts (
-          company_id, bank_name, bank_code, account_name, account_type,
+          company_id, bank_name, account_name, account_type,
           currency, country, account_number_masked, is_primary,
           opening_balance, current_balance, available_balance, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10,$10,'active')
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'active')
         RETURNING *
-      `, [parseInt(company_id), bank_name, bank_code||null, account_name, account_type,
-          currency, country, account_number_masked||null, is_primary,
-          parseFloat(opening_balance)]);
+      `, [parseInt(company_id), bank_name, account_name, account_type,
+          currency, country, account_number_masked || null, is_primary,
+          parseFloat(opening_balance), parseFloat(current_balance || opening_balance),
+          parseFloat(available_balance || opening_balance)]);
     });
 
     writeAudit({
       userId: req.user.id, action: 'bank_account_created',
       entityType: 'treasury_bank_accounts', entityId: result.rows[0].id,
       companyId: parseInt(company_id),
-      newValues: { bank_name, bank_code, account_type, currency },
+      newValues: { bank_name, account_name, account_type, currency, country },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
@@ -190,6 +177,7 @@ router.post('/accounts', async (req, res, next) => {
 
 // ─── BANK CARDS ───────────────────────────────────────────────
 
+// GET /api/treasury/cards
 router.get('/cards', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
@@ -204,7 +192,7 @@ router.get('/cards', async (req, res, next) => {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const result = await query(`
-      SELECT c.*, a.bank_name, a.bank_code, a.account_name, a.currency,
+      SELECT c.*, a.bank_name, a.account_name, a.currency,
         CONCAT(e.first_name,' ',e.last_name) AS employee_name
       FROM treasury_cards c
       LEFT JOIN treasury_bank_accounts a ON a.id = c.bank_account_id
@@ -217,36 +205,45 @@ router.get('/cards', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// POST /api/treasury/cards
 router.post('/cards', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.create')) return;
   try {
-    const { company_id, bank_account_id, employee_id, card_holder,
-            card_type, last4, monthly_limit, transaction_limit } = req.body;
+    const {
+      company_id, bank_account_id, employee_id, card_holder,
+      card_type, last4, monthly_limit, transaction_limit
+    } = req.body;
 
-    if (!company_id || !card_holder || !card_type || !last4)
+    if (!company_id || !card_holder || !card_type || !last4) {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: company_id, card_holder, card_type, last4' });
+    }
 
-    // C5: Company isolation
-    if (!await assertCompanyAccess(req, res, company_id)) return;
-
-    if (!['debit','credit'].includes(card_type))
+    const VALID_CARD_TYPES = ['debit','credit'];
+    if (!VALID_CARD_TYPES.includes(card_type))
       return res.status(400).json({ success: false, error: 'invalid_card_type' });
 
+    // Fix 1: Company isolation
+    if (!await assertCompanyAccess(req, res, company_id)) return;
+
     const result = await query(`
-      INSERT INTO treasury_cards (company_id, bank_account_id, employee_id, card_holder,
-        card_type, last4, monthly_limit, transaction_limit, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active') RETURNING *
+      INSERT INTO treasury_cards (
+        company_id, bank_account_id, employee_id, card_holder,
+        card_type, last4, monthly_limit, transaction_limit, status
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active')
+      RETURNING *
     `, [parseInt(company_id), bank_account_id||null, employee_id||null,
         card_holder, card_type, last4,
         monthly_limit ? parseFloat(monthly_limit) : null,
         transaction_limit ? parseFloat(transaction_limit) : null]);
 
-    writeAudit({ userId: req.user.id, action: 'card_created',
+    writeAudit({
+      userId: req.user.id, action: 'card_created',
       entityType: 'treasury_cards', entityId: result.rows[0].id,
       companyId: parseInt(company_id),
       newValues: { card_holder, card_type, last4 },
-      ip: req.ip, userAgent: req.get('user-agent') }).catch(() => {});
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
 
     res.status(201).json({ success: true, message: 'Card created.', data: result.rows[0] });
   } catch (error) { next(error); }
@@ -254,6 +251,7 @@ router.post('/cards', async (req, res, next) => {
 
 // ─── FX RATES ─────────────────────────────────────────────────
 
+// GET /api/treasury/fx-rates
 router.get('/fx-rates', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
@@ -262,38 +260,44 @@ router.get('/fx-rates', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
-    if (currency_from) { conditions.push(`currency_from = $${idx++}`); values.push(currency_from.toUpperCase()); }
-    if (currency_to)   { conditions.push(`currency_to = $${idx++}`);   values.push(currency_to.toUpperCase()); }
-    if (date)          { conditions.push(`effective_date = $${idx++}`); values.push(date); }
+    if (currency_from) { conditions.push(`f.currency_from = $${idx++}`); values.push(currency_from.toUpperCase()); }
+    if (currency_to)   { conditions.push(`f.currency_to = $${idx++}`);   values.push(currency_to.toUpperCase()); }
+    if (date)          { conditions.push(`f.effective_date = $${idx++}`); values.push(date); }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const result = await query(
-      `SELECT * FROM treasury_fx_rates ${where} ORDER BY effective_date DESC LIMIT 100`,
-      values
-    );
+    const result = await query(`
+      SELECT * FROM treasury_fx_rates ${where}
+      ORDER BY effective_date DESC, created_at DESC
+      LIMIT 100
+    `, values);
 
     res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) { next(error); }
 });
 
+// POST /api/treasury/fx-rates
 router.post('/fx-rates', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
   try {
     const { currency_from, currency_to, rate, source = 'MANUAL',
             effective_date, is_manual_override = false } = req.body;
 
-    if (!currency_from || !currency_to || !rate || !effective_date)
+    if (!currency_from || !currency_to || !rate || !effective_date) {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: currency_from, currency_to, rate, effective_date' });
+    }
 
-    if (!['DOF','MANUAL'].includes(source))
+    const VALID_SOURCES = ['DOF','MANUAL'];
+    if (!VALID_SOURCES.includes(source))
       return res.status(400).json({ success: false, error: 'invalid_source' });
 
-    // Append-only — never overwrite historical rates
+    // Never overwrite — always insert new record
     const result = await query(`
-      INSERT INTO treasury_fx_rates (currency_from, currency_to, rate, source, effective_date, is_manual_override)
-      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *
+      INSERT INTO treasury_fx_rates (
+        currency_from, currency_to, rate, source, effective_date, is_manual_override
+      ) VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING *
     `, [currency_from.toUpperCase(), currency_to.toUpperCase(),
         parseFloat(rate), source, effective_date, is_manual_override]);
 
@@ -303,6 +307,7 @@ router.post('/fx-rates', async (req, res, next) => {
 
 // ─── APPROVAL RULES ───────────────────────────────────────────
 
+// GET /api/treasury/approval-rules
 router.get('/approval-rules', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
   try {
@@ -322,6 +327,7 @@ router.get('/approval-rules', async (req, res, next) => {
       ORDER BY r.approval_type, r.approval_order ASC
     `, values);
 
+    // Group by approval_type
     const grouped = result.rows.reduce((acc, row) => {
       if (!acc[row.approval_type]) acc[row.approval_type] = [];
       acc[row.approval_type].push(row);
@@ -334,6 +340,7 @@ router.get('/approval-rules', async (req, res, next) => {
 
 // ─── INTERCOMPANY TRANSFERS ───────────────────────────────────
 
+// GET /api/treasury/intercompany-transfers
 router.get('/intercompany-transfers', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
@@ -352,7 +359,9 @@ router.get('/intercompany-transfers', async (req, res, next) => {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const result = await query(`
-      SELECT t.*, sc.name AS source_company_name, tc.name AS target_company_name,
+      SELECT t.*,
+        sc.name AS source_company_name,
+        tc.name AS target_company_name,
         CONCAT(u.first_name,' ',u.last_name) AS created_by_name,
         CONCAT(a.first_name,' ',a.last_name) AS approved_by_name
       FROM treasury_intercompany_transfers t
@@ -361,56 +370,52 @@ router.get('/intercompany-transfers', async (req, res, next) => {
       LEFT JOIN users u ON u.id = t.created_by
       LEFT JOIN users a ON a.id = t.approved_by
       ${where}
-      ORDER BY t.created_at DESC LIMIT 100
+      ORDER BY t.created_at DESC
+      LIMIT 100
     `, values);
 
     res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) { next(error); }
 });
 
+// POST /api/treasury/intercompany-transfers
 router.post('/intercompany-transfers', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.create')) return;
   try {
     const {
       source_company_id, target_company_id, transfer_type,
-      currency, amount, fx_rate_snapshot, description,
-      expected_repayment_date  // C3: loan repayment tracking
+      currency, amount, fx_rate_snapshot, description
     } = req.body;
 
-    if (!source_company_id || !target_company_id || !transfer_type || !currency || !amount)
+    if (!source_company_id || !target_company_id || !transfer_type || !currency || !amount) {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: source_company_id, target_company_id, transfer_type, currency, amount' });
-
-    // C5: Company isolation
-    if (!await assertCompanyAccess(req, res, source_company_id)) return;
+    }
 
     const VALID_TYPES = ['PROJECT_FUNDING','MATERIAL_FUNDING','EXPENSE_REIMBURSEMENT',
                          'INTERCOMPANY_LOAN','LOAN_PAYMENT','INTEREST_PAYMENT','ADMIN_SERVICE'];
     if (!VALID_TYPES.includes(transfer_type))
-      return res.status(400).json({ success: false, error: 'invalid_transfer_type' });
+      return res.status(400).json({ success: false, error: 'invalid_transfer_type',
+        message: `transfer_type must be: ${VALID_TYPES.join(', ')}` });
 
     if (parseInt(source_company_id) === parseInt(target_company_id))
-      return res.status(400).json({ success: false, error: 'same_company' });
+      return res.status(400).json({ success: false, error: 'same_company',
+        message: 'Source and target companies must be different.' });
 
-    // C3: expected_repayment_date only valid for loan types
-    const LOAN_TYPES = ['INTERCOMPANY_LOAN','LOAN_PAYMENT','INTEREST_PAYMENT'];
-    if (expected_repayment_date && !LOAN_TYPES.includes(transfer_type))
-      return res.status(400).json({ success: false, error: 'invalid_repayment_date',
-        message: 'expected_repayment_date is only valid for loan transfer types.' });
+    // Fix 1: Company isolation — validate source company access
+    if (!await assertCompanyAccess(req, res, source_company_id)) return;
 
     const result = await query(`
       INSERT INTO treasury_intercompany_transfers (
         source_company_id, target_company_id, transfer_type,
         currency, amount, fx_rate_snapshot, description,
-        expected_repayment_date, status, created_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9)
+        status, created_by
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8)
       RETURNING *
     `, [parseInt(source_company_id), parseInt(target_company_id),
         transfer_type, currency, parseFloat(amount),
         fx_rate_snapshot ? parseFloat(fx_rate_snapshot) : null,
-        description || null,
-        expected_repayment_date || null,
-        req.user.id]);
+        description || null, req.user.id]);
 
     writeAudit({
       userId: req.user.id, action: 'intercompany_transfer_created',
@@ -424,55 +429,185 @@ router.post('/intercompany-transfers', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// ─── APPROVE INTERCOMPANY TRANSFER ───────────────────────────
-// R2: Separate creation from approval — treasury.approve required
-router.post('/intercompany-transfers/:id/approve', async (req, res, next) => {
-  if (!await assertTreasuryPermission(req, res, 'treasury.approve')) return;
+// ─── SPRINT 1B: TRANSACTIONS ─────────────────────────────────
+
+// GET /api/treasury/transactions
+router.get('/transactions', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
-    const transferId = parseInt(req.params.id);
+    const companyId = getCompanyScope(req.user, req.query.company_id);
+    const conditions = [];
+    const values = [];
+    let idx = 1;
 
-    // Fetch transfer
-    const existing = await query(
-      `SELECT * FROM treasury_intercompany_transfers WHERE id = $1`,
-      [transferId]
+    if (companyId) { conditions.push(`t.company_id = $${idx++}`); values.push(companyId); }
+    if (req.query.bank_account_id) { conditions.push(`t.bank_account_id = $${idx++}`); values.push(req.query.bank_account_id); }
+    if (req.query.status)    { conditions.push(`t.status = $${idx++}`);    values.push(req.query.status); }
+    if (req.query.direction) { conditions.push(`t.direction = $${idx++}`); values.push(req.query.direction); }
+    if (req.query.category_id) { conditions.push(`t.category_id = $${idx++}`); values.push(req.query.category_id); }
+    if (req.query.project_id)  { conditions.push(`t.project_id = $${idx++}`);  values.push(req.query.project_id); }
+    if (req.query.date_from)   { conditions.push(`t.transaction_date >= $${idx++}`); values.push(req.query.date_from); }
+    if (req.query.date_to)     { conditions.push(`t.transaction_date <= $${idx++}`); values.push(req.query.date_to); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const offset = parseInt(req.query.offset) || 0;
+
+    const [result, total] = await Promise.all([
+      query(`
+        SELECT t.*, a.bank_name, a.bank_code, a.currency, a.account_name,
+          cat.name AS category_name,
+          CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+        FROM treasury_bank_transactions t
+        JOIN treasury_bank_accounts a ON a.id = t.bank_account_id
+        LEFT JOIN treasury_transaction_categories cat ON cat.id = t.category_id
+        LEFT JOIN users u ON u.id = t.created_by
+        ${where}
+        ORDER BY t.transaction_date DESC, t.created_at DESC
+        LIMIT $${idx} OFFSET $${idx+1}
+      `, [...values, limit, offset]),
+      query(`SELECT COUNT(*) FROM treasury_bank_transactions t ${where}`, values)
+    ]);
+
+    res.json({
+      success: true, count: result.rows.length,
+      total: parseInt(total.rows[0].count),
+      data: result.rows
+    });
+  } catch (error) { next(error); }
+});
+
+// POST /api/treasury/transactions
+router.post('/transactions', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.create')) return;
+  try {
+    const {
+      company_id, bank_account_id, transaction_date, bank_reference,
+      bank_description, amount, direction, category_id, project_id,
+      vendor_id, client_id, invoice_id, notes,
+      import_source = 'MANUAL', status = 'pending'
+    } = req.body;
+
+    if (!company_id || !bank_account_id || !transaction_date || !bank_description || !amount || !direction)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: company_id, bank_account_id, transaction_date, bank_description, amount, direction' });
+
+    if (!await assertCompanyAccess(req, res, company_id)) return;
+
+    if (!['INFLOW','OUTFLOW'].includes(direction))
+      return res.status(400).json({ success: false, error: 'invalid_direction' });
+
+    if (!['pending','posted'].includes(status))
+      return res.status(400).json({ success: false, error: 'invalid_status' });
+
+    // Verify bank account belongs to company
+    const accountCheck = await query(
+      `SELECT id FROM treasury_bank_accounts WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+      [parseInt(bank_account_id), parseInt(company_id)]
     );
-
-    if (!existing.rows[0])
-      return res.status(404).json({ success: false, error: 'not_found',
-        message: 'Transfer not found.' });
-
-    const transfer = existing.rows[0];
-
-    if (transfer.status !== 'draft' && transfer.status !== 'pending')
-      return res.status(400).json({ success: false, error: 'invalid_status',
-        message: `Cannot approve a transfer with status: ${transfer.status}` });
-
-    // Prevent self-approval
-    if (transfer.created_by === req.user.id)
-      return res.status(403).json({ success: false, error: 'self_approval_denied',
-        message: 'You cannot approve your own transfer.' });
-
-    // C5: Company isolation
-    if (!await assertCompanyAccess(req, res, transfer.source_company_id)) return;
+    if (!accountCheck.rows[0])
+      return res.status(400).json({ success: false, error: 'invalid_bank_account',
+        message: 'Bank account not found or does not belong to this company.' });
 
     const result = await query(`
-      UPDATE treasury_intercompany_transfers
-      SET status = 'approved', approved_by = $1, updated_at = NOW()
-      WHERE id = $2
+      INSERT INTO treasury_bank_transactions (
+        company_id, bank_account_id, transaction_date, bank_reference,
+        bank_description, amount, direction, status, category_id,
+        project_id, vendor_id, client_id, invoice_id, notes, import_source, created_by
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING *
-    `, [req.user.id, transferId]);
+    `, [parseInt(company_id), parseInt(bank_account_id), transaction_date,
+        bank_reference||null, bank_description, parseFloat(amount), direction,
+        status, category_id||null, project_id||null, vendor_id||null,
+        client_id||null, invoice_id||null, notes||null, import_source, req.user.id]);
 
     writeAudit({
-      userId: req.user.id, action: 'transfer_approved',
-      entityType: 'treasury_intercompany_transfers', entityId: transferId,
-      companyId: transfer.source_company_id,
-      newValues: { status: 'approved', approved_by: req.user.id,
-                   transfer_type: transfer.transfer_type, amount: transfer.amount },
+      userId: req.user.id, action: 'transaction_created',
+      entityType: 'treasury_bank_transactions', entityId: result.rows[0].id,
+      companyId: parseInt(company_id),
+      newValues: { bank_account_id, amount, direction, transaction_date, import_source },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
-    logger.info(`[TREASURY] transfer approved: id=${transferId} by=${req.user.id}`);
-    res.json({ success: true, message: 'Transfer approved.', data: result.rows[0] });
+    res.status(201).json({ success: true, message: 'Transaction created.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── CATEGORIES ───────────────────────────────────────────────
+
+// GET /api/treasury/categories
+router.get('/categories', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
+  try {
+    const result = await query(
+      `SELECT * FROM treasury_transaction_categories WHERE is_active = TRUE ORDER BY name ASC`
+    );
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// ─── CASH POSITION ────────────────────────────────────────────
+
+// GET /api/treasury/cash-position
+router.get('/cash-position', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
+  try {
+    const companyId = getCompanyScope(req.user, req.query.company_id);
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (companyId) { conditions.push(`company_id = $${idx++}`); values.push(companyId); }
+    if (req.query.currency) { conditions.push(`currency = $${idx++}`); values.push(req.query.currency); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const result = await query(
+      `SELECT * FROM treasury_cash_position_view ${where} ORDER BY country, currency, is_primary DESC`,
+      values
+    );
+
+    // Group by currency for totals
+    const totals = result.rows.reduce((acc, row) => {
+      if (!acc[row.currency]) acc[row.currency] = { currency: row.currency, total_cash_position: 0, accounts: 0 };
+      acc[row.currency].total_cash_position += parseFloat(row.current_cash_position || 0);
+      acc[row.currency].accounts++;
+      return acc;
+    }, {});
+
+    res.json({
+      success: true, count: result.rows.length,
+      data: result.rows,
+      totals: Object.values(totals)
+    });
+  } catch (error) { next(error); }
+});
+
+// ─── ACTIVITY FEED ────────────────────────────────────────────
+
+// GET /api/treasury/activity-feed
+router.get('/activity-feed', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
+  try {
+    const companyId = getCompanyScope(req.user, req.query.company_id);
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    if (companyId) { conditions.push(`company_id = $${idx++}`); values.push(companyId); }
+    if (req.query.event_type) { conditions.push(`event_type = $${idx++}`); values.push(req.query.event_type); }
+    if (req.query.date_from)  { conditions.push(`event_date >= $${idx++}`); values.push(req.query.date_from); }
+    if (req.query.date_to)    { conditions.push(`event_date <= $${idx++}`); values.push(req.query.date_to); }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+
+    const result = await query(
+      `SELECT * FROM treasury_activity_feed ${where} ORDER BY event_date DESC, created_at DESC LIMIT $${idx}`,
+      [...values, limit]
+    );
+
+    res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch (error) { next(error); }
 });
 
