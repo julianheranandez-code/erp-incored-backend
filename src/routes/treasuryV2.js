@@ -183,6 +183,72 @@ router.post('/accounts', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+// ─── PUT /api/treasury/accounts/:id ─────────────────────────
+router.put('/accounts/:id', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
+  try {
+    const accountId = parseInt(req.params.id);
+
+    // Fetch existing account
+    const existing = await query(
+      `SELECT * FROM treasury_bank_accounts WHERE id = $1`, [accountId]
+    );
+    if (!existing.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found',
+        message: 'Bank account not found.' });
+
+    const account = existing.rows[0];
+
+    // C5: Company isolation
+    if (!await assertCompanyAccess(req, res, account.company_id)) return;
+
+    // Only allow editing these fields — bank_name, currency, account_number_masked, company_id are immutable
+    const { account_name, routing_number, notes, status, is_primary } = req.body;
+
+    const VALID_STATUSES = ['active','inactive','closed'];
+    if (status && !VALID_STATUSES.includes(status))
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `status must be: ${VALID_STATUSES.join(', ')}` });
+
+    // Build dynamic update — only provided fields
+    const setClauses = [];
+    const values = [];
+    let idx = 1;
+
+    const allowed = { account_name, routing_number, notes, status, is_primary };
+    for (const [field, val] of Object.entries(allowed)) {
+      if (val !== undefined) {
+        setClauses.push(`${field} = $${idx++}`);
+        values.push(val);
+      }
+    }
+
+    if (setClauses.length === 0)
+      return res.status(400).json({ success: false, error: 'no_fields',
+        message: 'No valid fields to update.' });
+
+    setClauses.push(`updated_at = NOW()`);
+    values.push(accountId);
+
+    const result = await query(
+      `UPDATE treasury_bank_accounts SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
+      values
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'bank_account_updated',
+      entityType: 'treasury_bank_accounts', entityId: String(accountId),
+      companyId: account.company_id,
+      oldValues: { account_name: account.account_name, status: account.status },
+      newValues: req.body,
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(`[TREASURY] account updated: id=${accountId} by=${req.user.id}`);
+    res.json({ success: true, message: 'Bank account updated.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
 // ─── BANK CARDS ───────────────────────────────────────────────
 
 // GET /api/treasury/cards
