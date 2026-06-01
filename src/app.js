@@ -168,6 +168,8 @@ app.use("/api/iam", require("./routes/iam"));
 
 app.use('/api/treasury', require('./routes/treasuryV2'));
 
+app.use('/api/treasury', require('./routes/treasury1c'));
+
 app.use(notFoundHandler);
 
 if (process.env.SENTRY_DSN) {
