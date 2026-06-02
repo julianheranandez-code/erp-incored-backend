@@ -609,14 +609,224 @@ router.post('/transactions', async (req, res, next) => {
 
 // ─── CATEGORIES ───────────────────────────────────────────────
 
+const VALID_CATEGORY_TYPES = ['income','expense','financing','investment','intercompany','tax','asset','transfer'];
+const VALID_CASH_FLOW = ['operating','investing','financing'];
+
 // GET /api/treasury/categories
 router.get('/categories', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
+    const { direction, module: mod, company_id, include_inactive } = req.query;
+    const conditions = [];
+    const values = [];
+    let idx = 1;
+
+    // Only active unless admin requests all
+    if (!include_inactive) conditions.push('is_active = TRUE');
+
+    // Direction filter: INFLOW → income/investment/financing
+    //                   OUTFLOW → expense/financing/asset/intercompany
+    if (direction === 'INFLOW') {
+      conditions.push(`category_type IN ('income','investment','financing')`);
+    } else if (direction === 'OUTFLOW') {
+      conditions.push(`category_type IN ('expense','financing','asset','intercompany')`);
+    }
+
+    if (mod) { conditions.push(`module = $${idx++}`); values.push(mod); }
+
+    // Multi-company: show global (NULL) + company-specific
+    if (company_id) {
+      conditions.push(`(company_id IS NULL OR company_id = $${idx++})`);
+      values.push(parseInt(company_id));
+    }
+
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
     const result = await query(
-      `SELECT * FROM treasury_transaction_categories WHERE is_active = TRUE ORDER BY name ASC`
+      `SELECT * FROM treasury_transaction_categories 
+       ${where} ORDER BY category_type, name ASC`,
+      values
     );
     res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch (error) { next(error); }
+});
+
+// POST /api/treasury/categories
+router.post('/categories', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
+  try {
+    const { name, category_type, cash_flow_class, description,
+            color, icon, company_id, module: mod = 'treasury' } = req.body;
+
+    // Required fields
+    if (!name || !category_type || !cash_flow_class)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: name, category_type, cash_flow_class' });
+
+    if (!VALID_CATEGORY_TYPES.includes(category_type))
+      return res.status(400).json({ success: false, error: 'invalid_category_type',
+        message: `category_type must be: ${VALID_CATEGORY_TYPES.join(', ')}` });
+
+    if (!VALID_CASH_FLOW.includes(cash_flow_class))
+      return res.status(400).json({ success: false, error: 'invalid_cash_flow_class',
+        message: `cash_flow_class must be: ${VALID_CASH_FLOW.join(', ')}` });
+
+    // C5: Validate company_id if provided
+    if (company_id && !await assertCompanyAccess(req, res, company_id)) return;
+
+    const result = await query(`
+      INSERT INTO treasury_transaction_categories
+        (name, category_type, cash_flow_class, description, color, icon,
+         company_id, module, is_system, is_active)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,FALSE,TRUE)
+      RETURNING *
+    `, [name, category_type, cash_flow_class, description||null,
+        color||null, icon||null, company_id||null, mod]);
+
+    writeAudit({
+      userId: req.user.id, action: 'category_created',
+      entityType: 'treasury_transaction_categories', entityId: String(result.rows[0].id),
+      companyId: company_id || null,
+      newValues: { name, category_type, cash_flow_class },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.status(201).json({ success: true, message: 'Category created.', data: result.rows[0] });
+  } catch (error) {
+    if (error.code === '23505')
+      return res.status(400).json({ success: false, error: 'duplicate_name',
+        message: 'A category with this name already exists.' });
+    next(error);
+  }
+});
+
+// PUT /api/treasury/categories/:id
+router.put('/categories/:id', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
+  try {
+    const catId = parseInt(req.params.id);
+
+    const existing = await query(
+      `SELECT * FROM treasury_transaction_categories WHERE id=$1`, [catId]
+    );
+    if (!existing.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cat = existing.rows[0];
+    const { name, category_type, cash_flow_class, description, color, icon, company_id } = req.body;
+
+    // Fix 1: Prevent category_type + cash_flow_class changes for system categories
+    if (cat.is_system) {
+      if (category_type && category_type !== cat.category_type)
+        return res.status(403).json({ success: false, error: 'system_category_locked',
+          message: 'category_type cannot be changed for system categories.' });
+      if (cash_flow_class && cash_flow_class !== cat.cash_flow_class)
+        return res.status(403).json({ success: false, error: 'system_category_locked',
+          message: 'cash_flow_class cannot be changed for system categories.' });
+    }
+
+    if (category_type && !VALID_CATEGORY_TYPES.includes(category_type))
+      return res.status(400).json({ success: false, error: 'invalid_category_type' });
+
+    if (cash_flow_class && !VALID_CASH_FLOW.includes(cash_flow_class))
+      return res.status(400).json({ success: false, error: 'invalid_cash_flow_class' });
+
+    // Fix 3: Validate company ownership — non-global categories
+    if (cat.company_id && !await assertCompanyAccess(req, res, cat.company_id)) return;
+
+    const setClauses = [];
+    const values = [];
+    let idx = 1;
+
+    // Fix 4: Exclude company_id from updates (set at creation only)
+    const fields = { name, category_type, cash_flow_class, description, color, icon };
+    for (const [field, val] of Object.entries(fields)) {
+      if (val !== undefined) { setClauses.push(`${field} = $${idx++}`); values.push(val); }
+    }
+
+    if (setClauses.length === 0)
+      return res.status(400).json({ success: false, error: 'no_fields' });
+
+    // Fix 4: Check uniqueness name + company_id + module before update
+    if (name && name !== cat.name) {
+      const dup = await query(
+        `SELECT id FROM treasury_transaction_categories 
+         WHERE name=$1 AND module=$2 
+         AND (company_id IS NULL AND $3::integer IS NULL 
+              OR company_id = $3) AND id != $4`,
+        [name, cat.module || 'treasury', cat.company_id, catId]
+      );
+      if (dup.rows[0])
+        return res.status(400).json({ success: false, error: 'duplicate_name',
+          message: 'A category with this name already exists for this company and module.' });
+    }
+
+    values.push(catId);
+    const result = await query(
+      `UPDATE treasury_transaction_categories SET ${setClauses.join(', ')} WHERE id=$${idx} RETURNING *`,
+      values
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'category_updated',
+      entityType: 'treasury_transaction_categories', entityId: String(catId),
+      companyId: cat.company_id,
+      oldValues: { name: cat.name, category_type: cat.category_type },
+      newValues: req.body,
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'Category updated.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// PATCH /api/treasury/categories/:id/status
+router.patch('/categories/:id/status', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.admin')) return;
+  try {
+    const catId = parseInt(req.params.id);
+    const { is_active } = req.body;
+
+    if (typeof is_active !== 'boolean')
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'is_active must be boolean.' });
+
+    const existing = await query(
+      `SELECT * FROM treasury_transaction_categories WHERE id=$1`, [catId]
+    );
+    if (!existing.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cat = existing.rows[0];
+
+    // Fix 2: Only super_admin can deactivate system categories
+    if (cat.is_system && !is_active) {
+      const roles = getEffectiveRoles(req.user);
+      if (!roles.includes('super_admin'))
+        return res.status(403).json({ success: false, error: 'super_admin_required',
+          message: 'Only super_admin can deactivate system categories.' });
+    }
+
+    // Fix 3: Validate company ownership for company-specific categories
+    if (cat.company_id && !await assertCompanyAccess(req, res, cat.company_id)) return;
+
+    const result = await query(
+      `UPDATE treasury_transaction_categories SET is_active=$1 WHERE id=$2 RETURNING *`,
+      [is_active, catId]
+    );
+
+    writeAudit({
+      userId: req.user.id, action: is_active ? 'category_activated' : 'category_deactivated',
+      entityType: 'treasury_transaction_categories', entityId: String(catId),
+      companyId: existing.rows[0].company_id,
+      oldValues: { is_active: existing.rows[0].is_active },
+      newValues: { is_active },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.json({ success: true,
+      message: `Category ${is_active ? 'activated' : 'deactivated'}.`,
+      data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
