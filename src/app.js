@@ -170,6 +170,8 @@ app.use('/api/treasury', require('./routes/treasuryV2'));
 
 app.use('/api/treasury', require('./routes/treasury1c'));
 
+app.use('/api/treasury', require('./routes/treasury1d'));
+
 app.use(notFoundHandler);
 
 if (process.env.SENTRY_DSN) {
