@@ -23,6 +23,7 @@ const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
+const { getApprovalChain, resolveApprovers } = require('../lib/approval-engine');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -80,105 +81,8 @@ async function assertCompanyAccess(req, res, companyId) {
   }
 }
 
-// ─── ROUTING ENGINE ───────────────────────────────────────────
-/**
- * Returns required approval chain for given type + amount
- * Uses proper business roles — not ERP system roles
- */
-function getApprovalChain(approvalType, amount) {
-  const amt = parseFloat(amount);
+// ─── APPROVAL ENGINE: imported from src/lib/approval-engine.js
 
-  switch (approvalType) {
-    case 'OPERATING_EXPENSE':
-      if (amt <= 1500)  return [
-        { level: 1, role: 'supervisor' }
-      ];
-      if (amt <= 6000)  return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' }
-      ];
-      if (amt <= 20000) return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' },
-        { level: 3, role: 'accounting_manager' }
-      ];
-      return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' },
-        { level: 3, role: 'accounting_manager' },
-        { level: 4, role: 'executive_approver' }
-      ];
-
-    case 'INTERNATIONAL_WIRE':
-      if (amt <= 10000) return [
-        { level: 1, role: 'accounting_manager' }
-      ];
-      return [
-        { level: 1, role: 'accounting_manager' },
-        { level: 2, role: 'executive_approver' }
-      ];
-
-    case 'DEBT_PAYMENT':
-      if (amt <= 25000) return [
-        { level: 1, role: 'accounting_manager' }
-      ];
-      return [
-        { level: 1, role: 'accounting_manager' },
-        { level: 2, role: 'executive_approver' }
-      ];
-
-    case 'PAYROLL':
-      return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' },
-        { level: 3, role: 'accounting_manager' }
-      ];
-
-    default:
-      return [{ level: 1, role: 'accounting_manager' }];
-  }
-}
-
-/**
- * Resolve actual users for each approval role from approval_role_assignments
- * Returns chain with user_id filled in
- */
-async function resolveApprovers(companyId, chain) {
-  const roles = chain.map(s => s.role);
-  const assignments = await query(`
-    SELECT approval_role, user_id,
-      CONCAT(u.first_name,' ',u.last_name) AS user_name, u.email
-    FROM approval_role_assignments ara
-    JOIN users u ON u.id = ara.user_id
-    WHERE ara.company_id=$1
-      AND ara.approval_role = ANY($2::text[])
-      AND ara.is_active=TRUE
-  `, [companyId, roles]);
-
-  const assignmentMap = {};
-  for (const a of assignments.rows) {
-    assignmentMap[a.approval_role] = a;
-  }
-
-  const resolved = [];
-  const missing = [];
-
-  for (const step of chain) {
-    const assignment = assignmentMap[step.role];
-    if (!assignment) {
-      missing.push(step.role);
-    } else {
-      resolved.push({
-        ...step,
-        user_id: assignment.user_id,
-        user_name: assignment.user_name,
-        email: assignment.email
-      });
-    }
-  }
-
-  return { resolved, missing };
-}
 
 // ─── ENDPOINTS ────────────────────────────────────────────────
 
