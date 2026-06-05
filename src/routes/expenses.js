@@ -189,7 +189,7 @@ router.post('/', async (req, res, next) => {
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18)
       RETURNING *
     `, [parseInt(company_id), project_id ? parseInt(project_id) : null,
-        employee_id ? parseInt(employee_id) : null,
+        employee_id ? parseInt(employee_id) : parseInt(req.user.id),
         category_id ? parseInt(category_id) : null, description, parseFloat(amount), parseFloat(tax_amount),
         currency, parseFloat(exchange_rate), expense_date,
         reimbursable, attachment_url||null, receipt_url||null,
