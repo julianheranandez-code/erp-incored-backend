@@ -23,7 +23,7 @@ const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
-const { getApprovalChain, resolveApprovers } = require('../lib/approval-engine');
+const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy, VALID_APPROVAL_TYPES } = require('../lib/approval-engine');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -97,7 +97,8 @@ router.get('/approvals/routing-preview', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: company_id, approval_type, amount' });
 
-    const chain = getApprovalChain(approval_type, amount);
+    const approvalPolicy = await getCompanyApprovalPolicy(parseInt(company_id));
+    const chain = getApprovalChain(approval_type, amount, approvalPolicy);
     const { resolved, missing } = await resolveApprovers(parseInt(company_id), chain);
 
     res.json({
@@ -125,13 +126,13 @@ router.post('/approvals', async (req, res, next) => {
         message: 'Required: company_id, approval_type, amount' });
 
     if (!await assertCompanyAccess(req, res, company_id)) return;
-
-    const VALID_TYPES = ['OPERATING_EXPENSE','INTERNATIONAL_WIRE','DEBT_PAYMENT','PAYROLL'];
-    if (!VALID_TYPES.includes(approval_type))
+    if (!VALID_APPROVAL_TYPES.includes(approval_type))
       return res.status(400).json({ success: false, error: 'invalid_approval_type' });
 
     // Get approval chain
-    const chain = getApprovalChain(approval_type, amount);
+    // Fetch company approval policy — routing is policy-based
+    const approvalPolicy = await getCompanyApprovalPolicy(parseInt(company_id));
+    const chain = getApprovalChain(approval_type, amount, approvalPolicy);
 
     // Resolve specific users — Decision 2+3
     const { resolved, missing } = await resolveApprovers(parseInt(company_id), chain);
@@ -467,7 +468,7 @@ router.post('/approvals/:id/cancel', async (req, res, next) => {
 
 // ─── APPROVAL ASSIGNMENT CRUD ─────────────────────────────────
 
-const VALID_APPROVAL_ROLES = ['supervisor','operations_manager','accounting_manager','executive_approver'];
+const VALID_APPROVAL_ROLES = ['supervisor','operations_manager','finance','procurement','accounting_manager','executive_approver'];
 
 // GET /api/treasury/approval-assignments
 router.get('/approval-assignments', async (req, res, next) => {

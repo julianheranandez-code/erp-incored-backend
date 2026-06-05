@@ -27,7 +27,7 @@ const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
-const { getApprovalChain, resolveApprovers } = require('../lib/approval-engine');
+const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy } = require('../lib/approval-engine');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -271,7 +271,9 @@ router.patch('/payment-requests/:id/submit', async (req, res, next) => {
     // Option A: approval-engine.js is the ONLY source of truth
     // No local threshold logic — engine decides if approval is needed
     // approval-engine.js is the ONLY source of truth for routing
-    const chain = getApprovalChain(approvalType, pr.amount);
+    // Policy fetched from companies table — NOT derived from currency
+    const approvalPolicy = await getCompanyApprovalPolicy(pr.company_id);
+    const chain = getApprovalChain(approvalType, pr.amount, approvalPolicy);
 
     // Defensive: engine must always return a chain
     if (!chain || chain.length === 0) {
