@@ -24,6 +24,7 @@ const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
 const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy, VALID_APPROVAL_TYPES } = require('../lib/approval-engine');
+const { handleExpenseApprovalCompleted } = require('../services/expense-completion-service');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -339,11 +340,24 @@ router.post('/approvals/:id/approve', async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
+    // Fix 3: Event-driven auto-completion for Expense approvals
+    let entityCompletion = null;
+    if (isLastLevel && req_data.entity_type === 'EXPENSE') {
+      try {
+        entityCompletion = await handleExpenseApprovalCompleted(requestId, req.user.id, req);
+        logger.info(`[APPROVALS] expense auto-completed: expense=${entityCompletion?.expense_id} status=${entityCompletion?.status}`);
+      } catch(err) {
+        logger.error(`[APPROVALS] expense auto-completion failed: ${err.message}`);
+        // Do not fail the approval — log and continue
+      }
+    }
+
     logger.info(`[APPROVALS] step approved: request=${requestId} level=${req_data.current_level} final=${isLastLevel}`);
     res.json({ success: true,
       message: isLastLevel ? 'Request fully approved.' : `Step ${req_data.current_level} approved. Advancing to level ${nextLevel}.`,
       data: { request_id: requestId, level_approved: req_data.current_level,
-              new_status: newStatus, is_final: isLastLevel }
+              new_status: newStatus, is_final: isLastLevel,
+              entity_completion: entityCompletion || undefined }
     });
   } catch (error) { next(error); }
 });
