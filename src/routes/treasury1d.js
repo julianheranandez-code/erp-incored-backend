@@ -25,6 +25,8 @@ const { writeAudit } = require('../middleware/audit');
 const { getEffectivePermissions } = require('../lib/iam/effective-permissions');
 const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy, VALID_APPROVAL_TYPES } = require('../lib/approval-engine');
 const { handleExpenseApprovalCompleted } = require('../services/expense-completion-service');
+const { handleInternalPOApprovalCompleted } = require('../services/ipo-completion-service');
+const { handleAPBillApprovalCompleted } = require('../services/ap-bill-completion-service');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -315,13 +317,19 @@ router.post('/approvals/:id/approve', async (req, res, next) => {
     const newStatus = isLastLevel ? 'approved' : 'in_review';
     const nextLevel = isLastLevel ? req_data.current_level : req_data.current_level + 1;
 
+    // Sprint 3C.2: Completion service runs INSIDE the transaction
+    // Guarantees atomicity: approval + entity update are a single business transaction
+    let entityCompletion = null;
+
     await withTransaction(async (client) => {
+      // Step 1: Approve current step
       await client.query(`
         UPDATE treasury_approval_steps
         SET status='approved', approved_at=NOW(), comments=$1
         WHERE id=$2
       `, [comments||null, step.id]);
 
+      // Step 2: Update approval request status
       await client.query(`
         UPDATE treasury_approval_requests
         SET status=$1, current_level=$2,
@@ -329,27 +337,34 @@ router.post('/approvals/:id/approve', async (req, res, next) => {
             updated_at=NOW()
         WHERE id=$3
       `, [newStatus, nextLevel, requestId]);
+
+      // Step 3: If final level — run completion service INSIDE same transaction
+      // If completion fails → entire transaction rolls back → no partial state
+      if (isLastLevel) {
+        if (req_data.entity_type === 'EXPENSE') {
+          entityCompletion = await handleExpenseApprovalCompleted(requestId, req.user.id, req, client);
+        } else if (req_data.entity_type === 'INTERNAL_PO') {
+          entityCompletion = await handleInternalPOApprovalCompleted(requestId, req.user.id, req, client);
+        } else if (req_data.entity_type === 'AP_BILL') {
+          entityCompletion = await handleAPBillApprovalCompleted(requestId, req.user.id, req, client);
+        }
+        // Unknown entity_type with no handler: approval still commits (no entity to update)
+      }
     });
 
+    // Audit AFTER transaction commits — fire and forget (non-critical)
     writeAudit({
       userId: req.user.id,
       action: isLastLevel ? 'approval_workflow_completed' : 'approval_step_approved',
       entityType: 'treasury_approval_requests', entityId: String(requestId),
       companyId: req_data.company_id,
-      newValues: { level: req_data.current_level, new_status: newStatus, comments },
+      newValues: { level: req_data.current_level, new_status: newStatus,
+                   comments, entity_completion: entityCompletion },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
-    // Fix 3: Event-driven auto-completion for Expense approvals
-    let entityCompletion = null;
-    if (isLastLevel && req_data.entity_type === 'EXPENSE') {
-      try {
-        entityCompletion = await handleExpenseApprovalCompleted(requestId, req.user.id, req);
-        logger.info(`[APPROVALS] expense auto-completed: expense=${entityCompletion?.expense_id} status=${entityCompletion?.status}`);
-      } catch(err) {
-        logger.error(`[APPROVALS] expense auto-completion failed: ${err.message}`);
-        // Do not fail the approval — log and continue
-      }
+    if (isLastLevel && entityCompletion) {
+      logger.info(`[APPROVALS] workflow+entity committed atomically: type=${req_data.entity_type} approval=${requestId}`);
     }
 
     logger.info(`[APPROVALS] step approved: request=${requestId} level=${req_data.current_level} final=${isLastLevel}`);
