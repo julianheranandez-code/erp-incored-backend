@@ -27,6 +27,7 @@ const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy, VALID_APPR
 const { handleExpenseApprovalCompleted } = require('../services/expense-completion-service');
 const { handleInternalPOApprovalCompleted } = require('../services/ipo-completion-service');
 const { handleAPBillApprovalCompleted } = require('../services/ap-bill-completion-service');
+const { handleARInvoiceApprovalCompleted } = require('../services/ar-completion-service');
 const logger = require('../utils/logger');
 
 router.use(verifyToken);
@@ -347,6 +348,10 @@ router.post('/approvals/:id/approve', async (req, res, next) => {
           entityCompletion = await handleInternalPOApprovalCompleted(requestId, req.user.id, req, client);
         } else if (req_data.entity_type === 'AP_BILL') {
           entityCompletion = await handleAPBillApprovalCompleted(requestId, req.user.id, req, client);
+          logger.info(`[APPROVALS] AP Bill auto-completed: id=${entityCompletion?.bill_id}`);
+        } else if (req_data.entity_type === 'AR_INVOICE') {
+          entityCompletion = await handleARInvoiceApprovalCompleted(requestId, req.user.id, req, client);
+          logger.info(`[APPROVALS] AR Invoice auto-completed: id=${entityCompletion?.invoice_id} status=${entityCompletion?.status}`);
         }
         // Unknown entity_type with no handler: approval still commits (no entity to update)
       }

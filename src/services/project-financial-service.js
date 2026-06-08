@@ -53,7 +53,7 @@ function calculateFinancialHealth(actualCashCost, budgetCost, actualMargin) {
 
 // ─── CORE FINANCIAL SUMMARY ───────────────────────────────────
 async function getProjectFinancialSummary(projectId) {
-  const [project, ipoAgg, apBillsAgg, expCommittedAgg, apPaymentsAgg, expReimbursedAgg] = await Promise.all([
+  const [project, ipoAgg, apBillsAgg, expCommittedAgg, apPaymentsAgg, expReimbursedAgg, revenueAgg] = await Promise.all([
 
     query(`
       SELECT id, code, name, company_id, currency, status,
@@ -94,6 +94,21 @@ async function getProjectFinancialSummary(projectId) {
     query(`
       SELECT COALESCE(SUM(amount), 0) AS expenses_reimbursed
       FROM expenses WHERE project_id=$1 AND status='reimbursed'
+    `, [projectId]),
+
+    // Revenue metrics
+    query(`
+      SELECT
+        -- Invoiced Revenue = approved + sent + partially_paid + paid invoices
+        COALESCE(SUM(i.total_amount) FILTER (
+          WHERE i.status IN ('approved','sent','partially_paid','paid')
+        ), 0) AS invoiced_revenue,
+        -- Collected Revenue = all AR payments received
+        COALESCE((SELECT SUM(ap.amount) FROM ar_payments ap
+          JOIN ar_invoices ai ON ai.id = ap.invoice_id
+          WHERE ai.project_id = $1), 0) AS collected_revenue
+      FROM ar_invoices i
+      WHERE i.project_id = $1
     `, [projectId])
   ]);
 
@@ -129,6 +144,13 @@ async function getProjectFinancialSummary(projectId) {
 
   const financialHealth  = calculateFinancialHealth(actualCashCost, budgetCost, actualMargin);
 
+  // Revenue metrics (Sprint 4B — defined before use)
+  const invoicedRevenue    = parseFloat(revenueAgg.rows[0]?.invoiced_revenue || 0);
+  const collectedRevenue   = parseFloat(revenueAgg.rows[0]?.collected_revenue || 0);
+  const outstandingRevenue = invoicedRevenue - collectedRevenue;
+  const collectionPct      = invoicedRevenue > 0
+    ? Math.round((collectedRevenue / invoicedRevenue) * 1000) / 10 : null;
+
   // Additional budget visibility metrics (Sprint 4A.3)
   const remainingCommitmentBudget = budgetCost > 0 ? budgetCost - committedCost : null;
   const remainingCashBudget       = budgetCost > 0 ? budgetCost - actualCashCost : null;
@@ -162,7 +184,12 @@ async function getProjectFinancialSummary(projectId) {
     actual_margin:                  actualMargin,
     margin_percent:                 marginPct,
     cash_consumption_percent:       cashConsumptionPct,
-    financial_health:               financialHealth
+    financial_health:               financialHealth,
+    // Revenue metrics (Sprint 4B)
+    invoiced_revenue:               invoicedRevenue,
+    collected_revenue:              collectedRevenue,
+    outstanding_revenue:            outstandingRevenue,
+    collection_percent:             collectionPct
   };
 }
 
@@ -225,7 +252,9 @@ async function getPortfolioDashboard(companyId = null) {
       COALESCE(ab.ap_bill_balance, 0)     AS approved_ap_bill_balance,
       COALESCE(exp_c.exp_committed, 0)    AS approved_expense_balance,
       COALESCE(ap_p.ap_cash, 0)           AS ap_cash_paid,
-      COALESCE(exp_r.exp_reimbursed, 0)   AS expenses_reimbursed
+      COALESCE(exp_r.exp_reimbursed, 0)   AS expenses_reimbursed,
+      COALESCE(rev_inv.invoiced_revenue, 0) AS invoiced_revenue,
+      COALESCE(rev_pay.collected_revenue, 0) AS collected_revenue
     FROM projects p
     LEFT JOIN clients c    ON c.id = p.client_id
     LEFT JOIN companies co ON co.id = p.company_id
@@ -253,6 +282,21 @@ async function getPortfolioDashboard(companyId = null) {
       SELECT project_id, SUM(amount) AS exp_reimbursed
       FROM expenses WHERE status='reimbursed' GROUP BY project_id
     ) exp_r ON exp_r.project_id = p.id
+    LEFT JOIN (
+      -- Invoiced revenue: sum invoice totals (no payment join = no row multiplication)
+      SELECT project_id,
+        COALESCE(SUM(total_amount) FILTER (
+          WHERE status IN ('approved','sent','partially_paid','paid')
+        ), 0) AS invoiced_revenue
+      FROM ar_invoices GROUP BY project_id
+    ) rev_inv ON rev_inv.project_id = p.id
+    LEFT JOIN (
+      -- Collected revenue: sum payments via invoice FK (separate join = correct aggregation)
+      SELECT ai.project_id, COALESCE(SUM(ap.amount), 0) AS collected_revenue
+      FROM ar_payments ap
+      JOIN ar_invoices ai ON ai.id = ap.invoice_id
+      GROUP BY ai.project_id
+    ) rev_pay ON rev_pay.project_id = p.id
     ${where}
     ORDER BY p.created_at DESC
   `, params);
@@ -291,6 +335,9 @@ async function getPortfolioDashboard(companyId = null) {
       remaining_budget: bc > 0 ? bc - exp : null,
       remaining_commitment_budget: bc > 0 ? bc - cc : null,
       remaining_cash_budget: bc > 0 ? bc - acc : null,
+      invoiced_revenue: parseFloat(p.invoiced_revenue || 0),
+      collected_revenue: parseFloat(p.collected_revenue || 0),
+      outstanding_revenue: parseFloat(p.invoiced_revenue || 0) - parseFloat(p.collected_revenue || 0),
       expected_margin: cv - bc, actual_margin: am,
       margin_percent: cv > 0 ? Math.round((am/cv)*1000)/10 : null,
       cash_consumption_percent: pct, financial_health: fh };
@@ -302,6 +349,9 @@ async function getPortfolioDashboard(companyId = null) {
       total_actual_margin: totals.contract_value - totals.actual_cash_cost,
       total_remaining_commitment_budget: totals.budget_cost - totals.committed_cost,
       total_remaining_cash_budget: totals.budget_cost - totals.actual_cash_cost,
+      total_invoiced_revenue: enriched.reduce((s,p) => s + (p.invoiced_revenue||0), 0),
+      total_collected_revenue: enriched.reduce((s,p) => s + (p.collected_revenue||0), 0),
+      total_outstanding_revenue: enriched.reduce((s,p) => s + (p.outstanding_revenue||0), 0),
       health_distribution: health },
     projects: enriched
   };
