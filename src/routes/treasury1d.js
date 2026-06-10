@@ -230,7 +230,7 @@ router.get('/approvals', async (req, res, next) => {
         -- Sprint 4C.4A: document metadata (single CASE join — no N+1)
         COALESCE(
           CASE r.entity_type
-            WHEN 'EXPENSE'      THEN e.expense_number
+            WHEN 'EXPENSE'      THEN 'EXP-' || e.id::text
             WHEN 'INTERNAL_PO'  THEN ipo.po_number
             WHEN 'AP_BILL'      THEN COALESCE(ab.folio, ab.vendor_invoice_no)
             WHEN 'AR_INVOICE'   THEN ai.folio
@@ -299,7 +299,7 @@ router.get('/approvals/:id', async (req, res, next) => {
         c.name AS company_name,
         COALESCE(
           CASE r.entity_type
-            WHEN 'EXPENSE'      THEN e.expense_number
+            WHEN 'EXPENSE'      THEN 'EXP-' || e.id::text
             WHEN 'INTERNAL_PO'  THEN ipo.po_number
             WHEN 'AP_BILL'      THEN COALESCE(ab.folio, ab.vendor_invoice_no)
             WHEN 'AR_INVOICE'   THEN ai.folio
