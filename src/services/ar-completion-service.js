@@ -1,5 +1,7 @@
 'use strict';
 
+const { onARInvoiceApproved, onARInvoiceCancelled } = require('./financial-event-service');
+
 /**
  * AR Invoice Completion Service — Sprint 4B
  * ==========================================
@@ -35,6 +37,14 @@ async function handleARInvoiceApprovalCompleted(approvalRequestId, approvedByUse
       approval_status='approved', updated_at=NOW()
     WHERE id=$2
   `, [approvedByUserId, invoice.id]);
+
+  // Sprint 5.2B.1: Emit REVENUE financial event
+  try {
+    await onARInvoiceApproved(invoice, approvedByUserId, client);
+  } catch(evtErr) {
+    logger.error(`[AR-SVC] Financial event emission failed: ${evtErr.message}`);
+    throw evtErr; // Rollback — event and approval must be atomic
+  }
 
   // FIX 6: Consume Customer PO balance atomically on approval
   // PO controls billing authorization — reduced when invoice is approved, not when paid

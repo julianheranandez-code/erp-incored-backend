@@ -1,5 +1,7 @@
 'use strict';
 
+const { onAPPaymentRecorded, onAPBillCancelled } = require('../services/financial-event-service');
+
 /**
  * AP Bills v2 — Sprint 3D
  * ========================
@@ -352,6 +354,16 @@ router.post('/:id/payments', async (req, res, next) => {
         WHERE id = $5 RETURNING *
       `, [newTotalPaid, newOutstanding, newStatus, paidDate, id]);
 
+      // Sprint 5.2B.1 FIX: AP payment events are ATOMIC — inside transaction
+      // Consistent with AR payment architecture — cash events must not fail silently
+      const { onAPPaymentRecorded } = require('../services/financial-event-service');
+      try {
+        await onAPPaymentRecorded(payment.rows[0], b, req.user.id, client);
+      } catch(evtErr) {
+        logger.error(`[AP] Payment financial event failed: ${evtErr.message}`);
+        throw evtErr; // Rollback payment — no partial state
+      }
+
       return { payment: payment.rows[0], bill: updatedBill.rows[0] };
     });
 
@@ -398,6 +410,11 @@ router.post('/:id/cancel', async (req, res, next) => {
         notes=CONCAT(COALESCE(notes,''),' | Cancelled: ',$1), updated_at=NOW()
       WHERE id=$2
     `, [reason, id]);
+
+    // Sprint 5.2B.1: Emit REVERSAL events for OPEX + LIABILITY
+    onAPBillCancelled(bill, req.user.id).catch(e =>
+      logger.error(`[AP] Cancel reversal event failed: ${e.message}`)
+    );
 
     setImmediate(() => queueRefresh(bill.project_id, 'ap_bill.cancel'));
     res.json({ success: true, message: 'AP Bill cancelled.' });

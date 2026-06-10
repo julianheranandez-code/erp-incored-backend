@@ -1,5 +1,7 @@
 'use strict';
 
+const { onAPBillApproved, onAPBillCancelled } = require('./financial-event-service');
+
 /**
  * PROJECT COST MODEL — Sprint 3D.1 Official Definition
  * =====================================================
@@ -186,6 +188,14 @@ async function handleAPBillApprovalCompleted(approvalRequestId, approvedByUserId
   `, [prId, bill.id]);
 
   logger.info(`[APBILL-SVC] Bill ${bill.id} approved → payment request ${prId} created`);
+
+  // Sprint 5.2B.1: Emit OPERATING_EXPENSE + LIABILITY financial events
+  try {
+    await onAPBillApproved(bill, approvedByUserId, client);
+  } catch(evtErr) {
+    logger.error(`[APBILL-SVC] Financial event emission failed: ${evtErr.message}`);
+    throw evtErr; // Rollback — event and approval must be atomic
+  }
 
   // Update project spent_amount (async — non-critical)
   if (bill.project_id) {

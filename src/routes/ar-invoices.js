@@ -1,5 +1,7 @@
 'use strict';
 
+const { onARPaymentReceived, onARInvoiceCancelled } = require('../services/financial-event-service');
+
 /**
  * AR Invoices v2 — Sprint 4B Revenue Governance
  * ===============================================
@@ -336,6 +338,14 @@ router.post('/:id/payments', async (req, res, next) => {
         // Note: CPO remaining is for invoice amounts not payments
       }
 
+      // Sprint 5.2B.1: Emit COLLECTION + CASH_INFLOW events
+      try {
+        await onARPaymentReceived(payment.rows[0], invoice, req.user.id, client);
+      } catch(evtErr) {
+        logger.error(`[AR] Financial event emission failed: ${evtErr.message}`);
+        throw evtErr;
+      }
+
       return { payment: payment.rows[0], invoice: updatedInvoice.rows[0],
                bank_transaction_id: bankTransactionId };
     });
@@ -462,6 +472,11 @@ router.post('/:id/cancel', async (req, res, next) => {
         notes=CONCAT(COALESCE(notes,''),' | Cancelled: ',$1), updated_at=NOW()
       WHERE id=$2
     `, [reason, id]);
+
+    // Sprint 5.2B.1: Emit REVERSAL event if REVENUE exists
+    onARInvoiceCancelled(invoice, req.user.id).catch(e =>
+      logger.error(`[AR] Cancel reversal event failed: ${e.message}`)
+    );
 
     res.json({ success: true, message: 'AR Invoice cancelled.' });
   } catch(error) { next(error); }
