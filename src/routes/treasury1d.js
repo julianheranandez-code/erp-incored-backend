@@ -226,10 +226,58 @@ router.get('/approvals', async (req, res, next) => {
     const result = await query(`
       SELECT r.*,
         CONCAT(u.first_name,' ',u.last_name) AS requested_by_name,
-        c.name AS company_name
+        c.name AS company_name,
+        -- Sprint 4C.4A: document metadata (single CASE join — no N+1)
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'EXPENSE'      THEN e.expense_number
+            WHEN 'INTERNAL_PO'  THEN ipo.po_number
+            WHEN 'AP_BILL'      THEN COALESCE(ab.folio, ab.vendor_invoice_no)
+            WHEN 'AR_INVOICE'   THEN ai.folio
+          END
+        ) AS document_number,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'EXPENSE'     THEN ep.id
+            WHEN 'INTERNAL_PO' THEN ipop.id
+            WHEN 'AP_BILL'     THEN abp.id
+            WHEN 'AR_INVOICE'  THEN aip.id
+          END
+        ) AS project_id,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'EXPENSE'     THEN ep.name
+            WHEN 'INTERNAL_PO' THEN ipop.name
+            WHEN 'AP_BILL'     THEN abp.name
+            WHEN 'AR_INVOICE'  THEN aip.name
+          END
+        ) AS project_name,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'INTERNAL_PO' THEN ipov.name
+            WHEN 'AP_BILL'     THEN abv.name
+          END
+        ) AS vendor_name,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'AR_INVOICE' THEN aic.name
+          END
+        ) AS client_name
       FROM treasury_approval_requests r
       JOIN companies c ON c.id = r.company_id
       LEFT JOIN users u ON u.id = r.requested_by
+      -- Entity joins (LEFT — graceful if entity deleted)
+      LEFT JOIN expenses e             ON r.entity_type='EXPENSE'      AND e.id = r.entity_id::integer
+      LEFT JOIN projects ep            ON ep.id = e.project_id
+      LEFT JOIN internal_purchase_orders ipo  ON r.entity_type='INTERNAL_PO' AND ipo.id = r.entity_id::integer
+      LEFT JOIN projects ipop          ON ipop.id = ipo.project_id
+      LEFT JOIN vendors ipov           ON ipov.id = ipo.vendor_master_id
+      LEFT JOIN ap_bills ab            ON r.entity_type='AP_BILL'      AND ab.id = r.entity_id::integer
+      LEFT JOIN projects abp           ON abp.id = ab.project_id
+      LEFT JOIN vendors abv            ON abv.id = ab.vendor_master_id
+      LEFT JOIN ar_invoices ai         ON r.entity_type='AR_INVOICE'   AND ai.id = r.entity_id::integer
+      LEFT JOIN projects aip           ON aip.id = ai.project_id
+      LEFT JOIN clients aic            ON aic.id = ai.client_id
       ${where}
       ORDER BY r.requested_at DESC LIMIT 100
     `, values);
@@ -246,11 +294,50 @@ router.get('/approvals/:id', async (req, res, next) => {
     const companyId = getCompanyScope(req.user, req.query.company_id);
 
     const request = await query(`
-      SELECT r.*, CONCAT(u.first_name,' ',u.last_name) AS requested_by_name,
-        c.name AS company_name
+      SELECT r.*,
+        CONCAT(u.first_name,' ',u.last_name) AS requested_by_name,
+        c.name AS company_name,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'EXPENSE'      THEN e.expense_number
+            WHEN 'INTERNAL_PO'  THEN ipo.po_number
+            WHEN 'AP_BILL'      THEN COALESCE(ab.folio, ab.vendor_invoice_no)
+            WHEN 'AR_INVOICE'   THEN ai.folio
+          END
+        ) AS document_number,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'EXPENSE'     THEN ep.name
+            WHEN 'INTERNAL_PO' THEN ipop.name
+            WHEN 'AP_BILL'     THEN abp.name
+            WHEN 'AR_INVOICE'  THEN aip.name
+          END
+        ) AS project_name,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'INTERNAL_PO' THEN ipov.name
+            WHEN 'AP_BILL'     THEN abv.name
+          END
+        ) AS vendor_name,
+        COALESCE(
+          CASE r.entity_type
+            WHEN 'AR_INVOICE' THEN aic.name
+          END
+        ) AS client_name
       FROM treasury_approval_requests r
       JOIN companies c ON c.id = r.company_id
       LEFT JOIN users u ON u.id = r.requested_by
+      LEFT JOIN expenses e             ON r.entity_type='EXPENSE'      AND e.id = r.entity_id::integer
+      LEFT JOIN projects ep            ON ep.id = e.project_id
+      LEFT JOIN internal_purchase_orders ipo  ON r.entity_type='INTERNAL_PO' AND ipo.id = r.entity_id::integer
+      LEFT JOIN projects ipop          ON ipop.id = ipo.project_id
+      LEFT JOIN vendors ipov           ON ipov.id = ipo.vendor_master_id
+      LEFT JOIN ap_bills ab            ON r.entity_type='AP_BILL'      AND ab.id = r.entity_id::integer
+      LEFT JOIN projects abp           ON abp.id = ab.project_id
+      LEFT JOIN vendors abv            ON abv.id = ab.vendor_master_id
+      LEFT JOIN ar_invoices ai         ON r.entity_type='AR_INVOICE'   AND ai.id = r.entity_id::integer
+      LEFT JOIN projects aip           ON aip.id = ai.project_id
+      LEFT JOIN clients aic            ON aic.id = ai.client_id
       WHERE r.id=$1 ${companyId ? 'AND r.company_id=$2' : ''}
     `, companyId ? [requestId, companyId] : [requestId]);
 
