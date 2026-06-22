@@ -1,5 +1,7 @@
 'use strict';
 
+const { onIPOCancelled } = require('../services/financial-event-service');
+
 /**
  * PROJECT COMMITMENT MODEL — Architecture Note (Sprint 3C.3)
  * ===========================================================

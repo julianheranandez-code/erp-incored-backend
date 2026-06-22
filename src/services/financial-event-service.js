@@ -366,6 +366,139 @@ async function onAPBillCancelled(bill, cancelledByUserId, client = null) {
   return results;
 }
 
+// ─── EXPENSE PRODUCER ────────────────────────────────────────
+/**
+ * TRIGGER 1: Expense Approved → OPERATING_EXPENSE event
+ */
+async function onExpenseApproved(expense, approvedByUserId, client = null) {
+  return emitFinancialEvent({
+    company_id:    expense.company_id,
+    project_id:    expense.project_id || null,
+    event_type:    'OPERATING_EXPENSE',
+    event_subtype: 'EXPENSE_APPROVED',
+    event_category: 'OPERATING_EXPENSE',
+    event_date:    expense.expense_date || expense.created_at?.toISOString?.()?.slice(0,10)
+                   || new Date().toISOString().slice(0,10),
+    amount:        parseFloat(expense.amount),
+    currency:      expense.currency || 'MXN',
+    source_type:   'EXPENSE',
+    source_id:     expense.id,
+    created_by:    approvedByUserId,
+    metadata: {
+      expense_type:  expense.expense_type,
+      category_id:   expense.category_id,
+      description:   expense.description,
+      vendor_master_id: expense.vendor_master_id || null
+    }
+  }, client);
+}
+
+/**
+ * TRIGGER 2: Expense Reimbursed → CASH_OUTFLOW event
+ * source_type = EXPENSE_REIMBURSEMENT to distinguish from approval
+ */
+async function onExpenseReimbursed(expense, reimbursedByUserId, client = null) {
+  return emitFinancialEvent({
+    company_id:    expense.company_id,
+    project_id:    expense.project_id || null,
+    event_type:    'CASH_OUTFLOW',
+    event_subtype: 'EXPENSE_REIMBURSEMENT',
+    event_category: 'CASH_FLOW',
+    event_date:    new Date().toISOString().slice(0,10),
+    amount:        parseFloat(expense.amount),
+    currency:      expense.currency || 'MXN',
+    source_type:   'EXPENSE_REIMBURSEMENT',
+    source_id:     expense.id,
+    created_by:    reimbursedByUserId,
+    metadata: {
+      expense_type: expense.expense_type,
+      description:  expense.description
+    }
+  }, client);
+}
+
+/**
+ * TRIGGER 3: Expense Cancelled → REVERSAL of OPERATING_EXPENSE
+ */
+async function onExpenseCancelled(expense, cancelledByUserId, client = null) {
+  const originalEventId = await findEventId(
+    'EXPENSE', expense.id, 'OPERATING_EXPENSE', 'EXPENSE_APPROVED', client
+  );
+  if (!originalEventId) {
+    logger.info(`[FinancialEventService] Expense ${expense.id} cancelled — no OPERATING_EXPENSE event found`);
+    return null;
+  }
+  return emitFinancialEvent({
+    company_id:    expense.company_id,
+    project_id:    expense.project_id || null,
+    event_type:    'REVERSAL',
+    event_subtype: 'EXPENSE_APPROVED',
+    event_category: 'REVERSAL',
+    event_date:    new Date().toISOString().slice(0,10),
+    amount:        parseFloat(expense.amount),
+    currency:      expense.currency || 'MXN',
+    source_type:   'EXPENSE',
+    source_id:     expense.id,
+    reversal_of:   originalEventId,
+    created_by:    cancelledByUserId,
+    metadata: { description: expense.description, reason: 'expense_cancelled' }
+  }, client);
+}
+
+// ─── INTERNAL PO PRODUCER ────────────────────────────────────
+/**
+ * TRIGGER 1: IPO Approved → COMMITMENT event
+ * Note: COMMITMENT is budget-control only — NOT a P&L event
+ */
+async function onIPOApproved(ipo, approvedByUserId, client = null) {
+  return emitFinancialEvent({
+    company_id:    ipo.company_id,
+    project_id:    ipo.project_id,
+    event_type:    'COMMITMENT',
+    event_subtype: 'IPO_APPROVED',
+    event_category: 'BUDGET_CONTROL',
+    event_date:    new Date().toISOString().slice(0,10),
+    amount:        parseFloat(ipo.committed_amount || ipo.total_amount),
+    currency:      ipo.currency || 'MXN',
+    source_type:   'INTERNAL_PO',
+    source_id:     ipo.id,
+    created_by:    approvedByUserId,
+    metadata: {
+      po_number:       ipo.po_number,
+      vendor_master_id: ipo.vendor_master_id,
+      description:     ipo.description
+    }
+  }, client);
+}
+
+/**
+ * TRIGGER 2: IPO Cancelled → REVERSAL of COMMITMENT
+ */
+async function onIPOCancelled(ipo, cancelledByUserId, client = null) {
+  const originalEventId = await findEventId(
+    'INTERNAL_PO', ipo.id, 'COMMITMENT', 'IPO_APPROVED', client
+  );
+  if (!originalEventId) {
+    logger.info(`[FinancialEventService] IPO ${ipo.id} cancelled — no COMMITMENT event found`);
+    return null;
+  }
+  return emitFinancialEvent({
+    company_id:    ipo.company_id,
+    project_id:    ipo.project_id,
+    event_type:    'REVERSAL',
+    event_subtype: 'IPO_APPROVED',
+    event_category: 'BUDGET_CONTROL',
+    event_date:    new Date().toISOString().slice(0,10),
+    amount:        parseFloat(ipo.committed_amount || ipo.total_amount),
+    currency:      ipo.currency || 'MXN',
+    source_type:   'INTERNAL_PO',
+    source_id:     ipo.id,
+    reversal_of:   originalEventId,
+    created_by:    cancelledByUserId,
+    metadata: { po_number: ipo.po_number, reason: 'ipo_cancelled' }
+  }, client);
+}
+
 module.exports = {
   emitFinancialEvent,
   findEventId,
@@ -376,5 +509,12 @@ module.exports = {
   // AP producers
   onAPBillApproved,
   onAPPaymentRecorded,
-  onAPBillCancelled
+  onAPBillCancelled,
+  // Expense producers
+  onExpenseApproved,
+  onExpenseReimbursed,
+  onExpenseCancelled,
+  // Internal PO producers
+  onIPOApproved,
+  onIPOCancelled
 };

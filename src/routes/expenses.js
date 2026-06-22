@@ -443,6 +443,10 @@ router.post('/:id/cancel', async (req, res, next) => {
       WHERE id=$2
     `, [reason, id]);
 
+    // Sprint 5.2B.2: Emit REVERSAL event if OPERATING_EXPENSE exists
+    onExpenseCancelled(expense, req.user.id).catch(e =>
+      (console.error || (() => {}))(`[EXPENSE] Cancel reversal event failed: ${e.message}`)
+    );
     res.json({ success: true, message: 'Expense cancelled.' });
   } catch(error) { next(error); }
 });

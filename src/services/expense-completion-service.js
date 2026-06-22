@@ -1,5 +1,7 @@
 'use strict';
 
+const { onExpenseApproved } = require('./financial-event-service');
+
 /**
  * Expense Completion Service — Sprint 3C.2 hardening
  * ====================================================
@@ -42,6 +44,13 @@ async function handleExpenseApprovalCompleted(approvalRequestId, approvedByUserI
       [exp.id]
     );
     logger.info(`[EXPENSE-SVC] Corporate card expense ${exp.id} approved`);
+    // Sprint 5.2B.2: Emit OPERATING_EXPENSE event (atomic)
+    try {
+      await onExpenseApproved(exp, approvedByUserId, client);
+    } catch(evtErr) {
+      logger.error(`[EXPENSE-SVC] Financial event emission failed: ${evtErr.message}`);
+      throw evtErr;
+    }
     return { expense_id: exp.id, status: 'approved', payment_request_created: false };
   }
 

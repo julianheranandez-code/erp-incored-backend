@@ -1,5 +1,7 @@
 'use strict';
 
+const { onIPOApproved } = require('./financial-event-service');
+
 /**
  * Internal PO Completion Service — Sprint 3C.2 hardening
  * ========================================================
@@ -53,6 +55,14 @@ async function handleInternalPOApprovalCompleted(approvalRequestId, approvedByUs
     newValues: { status: 'approved', committed_amount: po.total_amount },
     ip: req.ip, userAgent: req.get ? req.get('user-agent') : null
   }).catch(() => {});
+
+  // Sprint 5.2B.2: Emit COMMITMENT event (atomic)
+  try {
+    await onIPOApproved(po, approvedByUserId, client);
+  } catch(evtErr) {
+    logger.error(`[IPO-SVC] Financial event emission failed: ${evtErr.message}`);
+    throw evtErr;
+  }
 
   return { po_id: po.id, status: 'approved', committed_amount: po.total_amount };
 }
