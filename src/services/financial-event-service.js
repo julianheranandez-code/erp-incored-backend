@@ -499,6 +499,117 @@ async function onIPOCancelled(ipo, cancelledByUserId, client = null) {
   }, client);
 }
 
+// ─── TREASURY PRODUCERS ──────────────────────────────────────
+/**
+ * TASK 2+3: Treasury Transaction recorded (INFLOW or OUTFLOW)
+ * Hooks into POST /api/treasury/transactions
+ */
+async function onTreasuryTransactionCreated(tx, createdByUserId, client = null) {
+  const isInflow = tx.direction === 'INFLOW';
+  return emitFinancialEvent({
+    company_id:    tx.company_id,
+    project_id:    tx.project_id || null,
+    event_type:    isInflow ? 'CASH_INFLOW' : 'CASH_OUTFLOW',
+    event_subtype: isInflow ? 'TREASURY_INFLOW' : 'TREASURY_OUTFLOW',
+    event_category: 'CASH_FLOW',
+    event_date:    tx.transaction_date || new Date().toISOString().slice(0,10),
+    amount:        parseFloat(tx.amount),
+    currency:      tx.currency || 'MXN',
+    source_type:   isInflow ? 'TREASURY_INFLOW' : 'TREASURY_OUTFLOW',
+    source_id:     tx.id,
+    created_by:    createdByUserId,
+    external_reference: tx.bank_reference || null,
+    metadata: {
+      bank_account_id: tx.bank_account_id,
+      bank_description: tx.bank_description,
+      category_id: tx.category_id,
+      direction: tx.direction
+    }
+  }, client);
+}
+
+/**
+ * TASK 1: Payment Request Executed → CASH_OUTFLOW
+ * Hooks when payment request reaches 'executed' status
+ */
+async function onPaymentRequestExecuted(pr, executedByUserId, client = null) {
+  return emitFinancialEvent({
+    company_id:    pr.company_id,
+    project_id:    pr.project_id || null,
+    event_type:    'CASH_OUTFLOW',
+    event_subtype: 'TREASURY_OUTFLOW',
+    event_category: 'CASH_FLOW',
+    event_date:    pr.payment_date || pr.scheduled_date || new Date().toISOString().slice(0,10),
+    amount:        parseFloat(pr.amount),
+    currency:      pr.currency || 'MXN',
+    source_type:   'PAYMENT_REQUEST',
+    source_id:     pr.id,
+    created_by:    executedByUserId,
+    metadata: {
+      source_document_type: pr.source_document_type,
+      source_document_id:   pr.source_document_id,
+      bank_account_id:      pr.bank_account_id,
+      payment_priority:     pr.payment_priority
+    }
+  }, client);
+}
+
+/**
+ * TASK 4: Intercompany Transfer → dual events (sender + receiver)
+ * BOTH events must be created atomically — no single-sided transfers
+ */
+async function onIntercompanyTransferExecuted(transfer, executedByUserId, client = null) {
+  const dbQuery = client ? (sql, p) => client.query(sql, p) : query;
+  const eventDate = transfer.executed_at
+    ? new Date(transfer.executed_at).toISOString().slice(0,10)
+    : new Date().toISOString().slice(0,10);
+
+  const basePayload = {
+    event_date:   eventDate,
+    amount:       parseFloat(transfer.amount),
+    currency:     transfer.currency || 'MXN',
+    source_type:  'INTERCOMPANY_TRANSFER',
+    source_id:    transfer.id,
+    created_by:   executedByUserId,
+    metadata: {
+      transfer_type:        transfer.transfer_type,
+      source_company_id:    transfer.source_company_id,
+      target_company_id:    transfer.target_company_id,
+      description:          transfer.description
+    }
+  };
+
+  // SENDER event (CASH_OUTFLOW from source company)
+  const senderEvent = await emitFinancialEvent({
+    ...basePayload,
+    company_id:              transfer.source_company_id,
+    project_id:              transfer.project_id || null,
+    event_type:              'CASH_OUTFLOW',
+    event_subtype:           'INTERCOMPANY_TRANSFER',
+    event_category:          'CASH_FLOW',
+    counterparty_company_id: transfer.target_company_id
+  }, client);
+
+  // RECEIVER event (CASH_INFLOW to target company)
+  // Use source_id offset to maintain idempotency for receiver
+  // source_id = transfer.id — same, but event_type differs → unique
+  const receiverEvent = await emitFinancialEvent({
+    ...basePayload,
+    company_id:              transfer.target_company_id,
+    project_id:              null,  // receiver may not know project
+    event_type:              'CASH_INFLOW',
+    event_subtype:           'INTERCOMPANY_TRANSFER',
+    event_category:          'CASH_FLOW',
+    counterparty_company_id: transfer.source_company_id
+  }, client);
+
+  logger.info(`[FinancialEventService] Intercompany transfer ${transfer.id}: ` +
+    `company ${transfer.source_company_id} → ${transfer.target_company_id} ` +
+    `sender=${senderEvent.event_id} receiver=${receiverEvent.event_id}`);
+
+  return { senderEvent, receiverEvent };
+}
+
 module.exports = {
   emitFinancialEvent,
   findEventId,
@@ -516,5 +627,9 @@ module.exports = {
   onExpenseCancelled,
   // Internal PO producers
   onIPOApproved,
-  onIPOCancelled
+  onIPOCancelled,
+  // Treasury producers (Sprint 5.2D)
+  onTreasuryTransactionCreated,
+  onPaymentRequestExecuted,
+  onIntercompanyTransferExecuted
 };
