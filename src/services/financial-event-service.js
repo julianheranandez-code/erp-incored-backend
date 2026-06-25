@@ -23,7 +23,7 @@ const logger = require('../utils/logger');
  * @param {object} [client] - DB transaction client (for atomicity)
  * @returns {object} Created event row
  */
-async function emitFinancialEvent(event, client = null) {
+async function emitFinancialEvent(event, client = null, executionContext = null) {
   const dbQuery = client ? (sql, p) => client.query(sql, p) : query;
 
   const {
@@ -78,7 +78,12 @@ async function emitFinancialEvent(event, client = null) {
     source_type || null, source_id ? parseInt(source_id) : null,
     reversal_of || null,
     counterparty_company_id ? parseInt(counterparty_company_id) : null,
-    JSON.stringify(metadata),
+    // FIX 2: executionContext appends ONLY — producer metadata always wins
+    // Merge order: executionContext first, then metadata overwrites
+    // This ensures producer values always take precedence over backfill context
+    JSON.stringify(executionContext
+      ? { ...executionContext, ...metadata }
+      : metadata),
     external_reference || null,
     created_by || null
   ]);
@@ -110,7 +115,7 @@ async function findEventId(source_type, source_id, event_type, event_subtype = n
 /**
  * TRIGGER 1: AR Invoice Approved → REVENUE event
  */
-async function onARInvoiceApproved(invoice, approvedByUserId, client = null) {
+async function onARInvoiceApproved(invoice, approvedByUserId, client = null, executionContext = null) {
   return emitFinancialEvent({
     company_id:    invoice.company_id,
     project_id:    invoice.project_id,
@@ -128,13 +133,13 @@ async function onARInvoiceApproved(invoice, approvedByUserId, client = null) {
       client_id:   invoice.client_id,
       due_date:    invoice.due_date
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TRIGGER 2: AR Payment Received → COLLECTION + CASH_INFLOW events
  */
-async function onARPaymentReceived(payment, invoice, createdByUserId, client = null) {
+async function onARPaymentReceived(payment, invoice, createdByUserId, client = null, executionContext = null) {
   const eventDate = payment.payment_date || new Date().toISOString().slice(0,10);
   const basePayload = {
     company_id:  invoice.company_id,
@@ -180,7 +185,7 @@ async function onARPaymentReceived(payment, invoice, createdByUserId, client = n
 /**
  * TRIGGER 3: AR Invoice Cancelled → REVERSAL of REVENUE
  */
-async function onARInvoiceCancelled(invoice, cancelledByUserId, client = null) {
+async function onARInvoiceCancelled(invoice, cancelledByUserId, client = null, executionContext = null) {
   const originalEventId = await findEventId('AR_INVOICE', invoice.id, 'REVENUE', 'AR_INVOICE', client);
   if (!originalEventId) {
     logger.info(`[FinancialEventService] AR Invoice ${invoice.id} cancelled — no REVENUE event found, skipping reversal`);
@@ -201,14 +206,14 @@ async function onARInvoiceCancelled(invoice, cancelledByUserId, client = null) {
     reversal_of:   originalEventId,
     created_by:    cancelledByUserId,
     metadata: { folio: invoice.folio, reason: 'invoice_cancelled' }
-  }, client);
+  }, client, executionContext);
 }
 
 // ─── AP BILL PRODUCER ─────────────────────────────────────────
 /**
  * TRIGGER 1: AP Bill Approved → OPERATING_EXPENSE + LIABILITY events
  */
-async function onAPBillApproved(bill, approvedByUserId, client = null) {
+async function onAPBillApproved(bill, approvedByUserId, client = null, executionContext = null) {
   const eventDate = bill.issue_date || new Date().toISOString().slice(0,10);
   const basePayload = {
     company_id:  bill.company_id,
@@ -248,7 +253,7 @@ async function onAPBillApproved(bill, approvedByUserId, client = null) {
 /**
  * TRIGGER 2: AP Payment Recorded → REVERSAL of LIABILITY + CASH_OUTFLOW
  */
-async function onAPPaymentRecorded(payment, bill, createdByUserId, client = null) {
+async function onAPPaymentRecorded(payment, bill, createdByUserId, client = null, executionContext = null) {
   // Find the original LIABILITY event to reverse
   const liabilityEventId = await findEventId('AP_BILL', bill.id, 'LIABILITY', 'AP_BILL', client);
 
@@ -308,7 +313,7 @@ async function onAPPaymentRecorded(payment, bill, createdByUserId, client = null
       event_subtype: 'AP_BILL_PAYMENT',
       event_category: 'BALANCE_SHEET',
       reversal_of:   liabilityEventId
-    }, client);
+    }, client, executionContext);
   }
 
   // Cash outflow
@@ -318,7 +323,7 @@ async function onAPPaymentRecorded(payment, bill, createdByUserId, client = null
     event_subtype: 'AP_BILL_PAYMENT',
     event_category: 'CASH_FLOW',
     external_reference: payment.reference || null
-  }, client);
+  }, client, executionContext);
 
   return results;
 }
@@ -326,7 +331,7 @@ async function onAPPaymentRecorded(payment, bill, createdByUserId, client = null
 /**
  * TRIGGER 3: AP Bill Cancelled → REVERSAL of OPERATING_EXPENSE + LIABILITY
  */
-async function onAPBillCancelled(bill, cancelledByUserId, client = null) {
+async function onAPBillCancelled(bill, cancelledByUserId, client = null, executionContext = null) {
   const [opexEventId, liabilityEventId] = await Promise.all([
     findEventId('AP_BILL', bill.id, 'OPERATING_EXPENSE', 'AP_BILL', client),
     findEventId('AP_BILL', bill.id, 'LIABILITY', 'AP_BILL', client)
@@ -356,12 +361,12 @@ async function onAPBillCancelled(bill, cancelledByUserId, client = null) {
   if (opexEventId) {
     results.opexReversal = await emitFinancialEvent({
       ...baseCancel, event_type: 'REVERSAL', reversal_of: opexEventId
-    }, client);
+    }, client, executionContext);
   }
   if (liabilityEventId) {
     results.liabilityReversal = await emitFinancialEvent({
       ...baseCancel, event_type: 'REVERSAL', reversal_of: liabilityEventId
-    }, client);
+    }, client, executionContext);
   }
   return results;
 }
@@ -370,7 +375,7 @@ async function onAPBillCancelled(bill, cancelledByUserId, client = null) {
 /**
  * TRIGGER 1: Expense Approved → OPERATING_EXPENSE event
  */
-async function onExpenseApproved(expense, approvedByUserId, client = null) {
+async function onExpenseApproved(expense, approvedByUserId, client = null, executionContext = null) {
   return emitFinancialEvent({
     company_id:    expense.company_id,
     project_id:    expense.project_id || null,
@@ -390,14 +395,14 @@ async function onExpenseApproved(expense, approvedByUserId, client = null) {
       description:   expense.description,
       vendor_master_id: expense.vendor_master_id || null
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TRIGGER 2: Expense Reimbursed → CASH_OUTFLOW event
  * source_type = EXPENSE_REIMBURSEMENT to distinguish from approval
  */
-async function onExpenseReimbursed(expense, reimbursedByUserId, client = null) {
+async function onExpenseReimbursed(expense, reimbursedByUserId, client = null, executionContext = null) {
   return emitFinancialEvent({
     company_id:    expense.company_id,
     project_id:    expense.project_id || null,
@@ -414,13 +419,13 @@ async function onExpenseReimbursed(expense, reimbursedByUserId, client = null) {
       expense_type: expense.expense_type,
       description:  expense.description
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TRIGGER 3: Expense Cancelled → REVERSAL of OPERATING_EXPENSE
  */
-async function onExpenseCancelled(expense, cancelledByUserId, client = null) {
+async function onExpenseCancelled(expense, cancelledByUserId, client = null, executionContext = null) {
   const originalEventId = await findEventId(
     'EXPENSE', expense.id, 'OPERATING_EXPENSE', 'EXPENSE_APPROVED', client
   );
@@ -442,7 +447,7 @@ async function onExpenseCancelled(expense, cancelledByUserId, client = null) {
     reversal_of:   originalEventId,
     created_by:    cancelledByUserId,
     metadata: { description: expense.description, reason: 'expense_cancelled' }
-  }, client);
+  }, client, executionContext);
 }
 
 // ─── INTERNAL PO PRODUCER ────────────────────────────────────
@@ -450,7 +455,7 @@ async function onExpenseCancelled(expense, cancelledByUserId, client = null) {
  * TRIGGER 1: IPO Approved → COMMITMENT event
  * Note: COMMITMENT is budget-control only — NOT a P&L event
  */
-async function onIPOApproved(ipo, approvedByUserId, client = null) {
+async function onIPOApproved(ipo, approvedByUserId, client = null, executionContext = null) {
   return emitFinancialEvent({
     company_id:    ipo.company_id,
     project_id:    ipo.project_id,
@@ -468,13 +473,13 @@ async function onIPOApproved(ipo, approvedByUserId, client = null) {
       vendor_master_id: ipo.vendor_master_id,
       description:     ipo.description
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TRIGGER 2: IPO Cancelled → REVERSAL of COMMITMENT
  */
-async function onIPOCancelled(ipo, cancelledByUserId, client = null) {
+async function onIPOCancelled(ipo, cancelledByUserId, client = null, executionContext = null) {
   const originalEventId = await findEventId(
     'INTERNAL_PO', ipo.id, 'COMMITMENT', 'IPO_APPROVED', client
   );
@@ -496,7 +501,7 @@ async function onIPOCancelled(ipo, cancelledByUserId, client = null) {
     reversal_of:   originalEventId,
     created_by:    cancelledByUserId,
     metadata: { po_number: ipo.po_number, reason: 'ipo_cancelled' }
-  }, client);
+  }, client, executionContext);
 }
 
 // ─── TREASURY PRODUCERS ──────────────────────────────────────
@@ -504,7 +509,7 @@ async function onIPOCancelled(ipo, cancelledByUserId, client = null) {
  * TASK 2+3: Treasury Transaction recorded (INFLOW or OUTFLOW)
  * Hooks into POST /api/treasury/transactions
  */
-async function onTreasuryTransactionCreated(tx, createdByUserId, client = null) {
+async function onTreasuryTransactionCreated(tx, createdByUserId, client = null, executionContext = null) {
   const isInflow = tx.direction === 'INFLOW';
   return emitFinancialEvent({
     company_id:    tx.company_id,
@@ -525,14 +530,14 @@ async function onTreasuryTransactionCreated(tx, createdByUserId, client = null) 
       category_id: tx.category_id,
       direction: tx.direction
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TASK 1: Payment Request Executed → CASH_OUTFLOW
  * Hooks when payment request reaches 'executed' status
  */
-async function onPaymentRequestExecuted(pr, executedByUserId, client = null) {
+async function onPaymentRequestExecuted(pr, executedByUserId, client = null, executionContext = null) {
   return emitFinancialEvent({
     company_id:    pr.company_id,
     project_id:    pr.project_id || null,
@@ -551,14 +556,14 @@ async function onPaymentRequestExecuted(pr, executedByUserId, client = null) {
       bank_account_id:      pr.bank_account_id,
       payment_priority:     pr.payment_priority
     }
-  }, client);
+  }, client, executionContext);
 }
 
 /**
  * TASK 4: Intercompany Transfer → dual events (sender + receiver)
  * BOTH events must be created atomically — no single-sided transfers
  */
-async function onIntercompanyTransferExecuted(transfer, executedByUserId, client = null) {
+async function onIntercompanyTransferExecuted(transfer, executedByUserId, client = null, executionContext = null) {
   const dbQuery = client ? (sql, p) => client.query(sql, p) : query;
   const eventDate = transfer.executed_at
     ? new Date(transfer.executed_at).toISOString().slice(0,10)
@@ -588,7 +593,7 @@ async function onIntercompanyTransferExecuted(transfer, executedByUserId, client
     event_subtype:           'INTERCOMPANY_TRANSFER',
     event_category:          'CASH_FLOW',
     counterparty_company_id: transfer.target_company_id
-  }, client);
+  }, client, executionContext);
 
   // RECEIVER event (CASH_INFLOW to target company)
   // Use source_id offset to maintain idempotency for receiver
@@ -601,7 +606,7 @@ async function onIntercompanyTransferExecuted(transfer, executedByUserId, client
     event_subtype:           'INTERCOMPANY_TRANSFER',
     event_category:          'CASH_FLOW',
     counterparty_company_id: transfer.source_company_id
-  }, client);
+  }, client, executionContext);
 
   logger.info(`[FinancialEventService] Intercompany transfer ${transfer.id}: ` +
     `company ${transfer.source_company_id} → ${transfer.target_company_id} ` +
