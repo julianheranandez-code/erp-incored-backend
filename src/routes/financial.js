@@ -32,5 +32,6 @@ router.get('/project/:projectId',   ctrl.getProjectSummary);
 
 // ── Trends (chart data) ──────────────────────────────────────
 router.get('/trends',               ctrl.getTrends);
+router.get('/pnl',                  ctrl.getPnL);
 
 module.exports = router;

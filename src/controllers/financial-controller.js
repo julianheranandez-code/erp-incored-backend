@@ -15,6 +15,7 @@
  */
 
 const summaryService = require('../services/financial-summary-service');
+const pnlService     = require('../services/financial-pnl-service');
 const queryService   = require('../services/financial-query-service');
 const { authorizeCompanyAccess, AuthorizationError }
                      = require('../services/financial-authorization-service');
@@ -173,7 +174,11 @@ async function getTrends(req, res, next) {
   }
 }
 
+const getPnL = withFinancialAuth('GET /pnl',
+  (companyId, filters) => pnlService.getProfitLoss(companyId, filters));
+
 module.exports = {
   getSummary, getRevenue, getExpenses, getCashFlow,
-  getLiabilities, getCommitments, getProjectSummary, getTrends
+  getLiabilities, getCommitments, getProjectSummary, getTrends,
+  getPnL
 };
