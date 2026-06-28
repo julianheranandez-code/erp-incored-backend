@@ -180,6 +180,8 @@ app.use('/api/vendors', require('./routes/vendors'));
 
 app.use('/api/treasury', require('./routes/treasury-execute'));
 
+app.use('/api/financial', require('./routes/financial'));
+
 app.use(notFoundHandler);
 
 if (process.env.SENTRY_DSN) {
