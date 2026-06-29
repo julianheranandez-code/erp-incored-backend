@@ -1,0 +1,9 @@
+{
+  "name": "@incored/platform-core",
+  "version": "1.0.0",
+  "description": "Incored Enterprise Platform Core SDK",
+  "main": "src/index.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": { "uuid": "^9.0.0" }
+}
