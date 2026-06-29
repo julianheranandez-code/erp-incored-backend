@@ -1,0 +1,121 @@
+openapi: 3.0.3
+info:
+  title: Portfolio Intelligence API
+  version: v1.0
+  description: |
+    Portfolio Intelligence Platform API — Sprint P3.3.
+    Single entry point for Portfolio Workspace, CEO Dashboard, AI, Power BI.
+    No business logic. Engine-driven. Contract v1.0 FROZEN.
+servers:
+  - url: https://incored-api.onrender.com/api/portfolio
+security:
+  - bearerAuth: []
+tags:
+  - name: Dashboard
+  - name: Projects
+  - name: Intelligence
+  - name: Platform
+paths:
+  /health:
+    get:
+      tags: [Platform]
+      summary: Platform health — engine + registry + capability status
+      security: []
+      responses:
+        '200': { description: Health status with capability registry }
+  /capabilities:
+    get:
+      tags: [Platform]
+      summary: Capability discovery — registered capabilities + dependency graph
+      security: []
+      responses:
+        '200': { description: CapabilityDescriptor[] }
+  /dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Full portfolio dashboard — PortfolioDashboardDTO
+      parameters:
+        - $ref: '#/components/parameters/company_id'
+        - $ref: '#/components/parameters/fiscal_period'
+      responses:
+        '200': { description: PortfolioDashboardDTO }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/AuthorizationError' }
+  /summary:
+    get:
+      tags: [Dashboard]
+      summary: Portfolio summary — PortfolioSummaryDTO
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: PortfolioSummaryDTO } }
+  /projects:
+    get:
+      tags: [Projects]
+      summary: All portfolio projects — PortfolioProjectDTO[]
+      parameters:
+        - $ref: '#/components/parameters/company_id'
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE,COMPLETED,ON_HOLD,CANCELLED,PIPELINE] } }
+        - { name: health, in: query, schema: { type: string, enum: [EXCELLENT,GOOD,WARNING,CRITICAL,NO_DATA] } }
+        - { name: priority, in: query, schema: { type: string, enum: [CRITICAL,HIGH,MEDIUM,LOW,MONITOR] } }
+      responses: { '200': { description: PortfolioProjectDTO[] } }
+  /projects/{project_id}:
+    get:
+      tags: [Projects]
+      summary: Single project — PortfolioProjectDTO
+      parameters:
+        - $ref: '#/components/parameters/company_id'
+        - { name: project_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: PortfolioProjectDTO }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /rankings:
+    get:
+      tags: [Intelligence]
+      summary: Project rankings — PortfolioRankingsDTO
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: PortfolioRankingsDTO with 6 ranking dimensions } }
+  /risk:
+    get:
+      tags: [Intelligence]
+      summary: Portfolio risk assessment — PortfolioRiskDTO
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: PortfolioRiskDTO } }
+  /allocations:
+    get:
+      tags: [Intelligence]
+      summary: Portfolio allocations — PortfolioAllocationDTO[]
+      parameters:
+        - $ref: '#/components/parameters/company_id'
+        - { name: allocation_type, in: query, schema: { type: string, enum: [BY_CLIENT,BY_COMPANY,BY_PROJECT_TYPE,BY_STATUS,BY_BUSINESS_UNIT] } }
+      responses: { '200': { description: PortfolioAllocationDTO[] } }
+  /recommendations:
+    get:
+      tags: [Intelligence]
+      summary: Portfolio recommendations — RecommendationDTO[]
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: RecommendationDTO[] — rule-based v1.0, AI Sprint P3.5 } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    company_id:
+      name: company_id
+      in: query
+      required: true
+      schema: { type: integer, minimum: 1 }
+    fiscal_period:
+      name: fiscal_period
+      in: query
+      schema: { type: string, pattern: '^\d{4}-\d{2}$', example: '2026-06' }
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            properties:
+              success: { type: boolean, example: false }
+              error: { type: object, properties: { code: { type: string }, message: { type: string } } }
+    AuthorizationError:
+      description: Company access denied
+    NotFound:
+      description: Resource not found
