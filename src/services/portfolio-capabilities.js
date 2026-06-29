@@ -225,8 +225,9 @@ class PortfolioAggregationCapability {
 // ═══════════════════════════════════════════════════════════════
 class PortfolioRankingCapability {
   constructor() { this.name='PortfolioRankingCapability'; this.health='HEALTHY'; }
-  execute(capCtx, projects) {
+  execute(capCtx) {
     const metrics = capCtx.createMetrics(this.name);
+    const projects = capCtx.projects();
     const rank = (sorted,metric,label,getValue,fmt) =>
       sorted.map((p,i)=>({ meta:capCtx.portfolio.buildMeta(0), rank:i+1, metric, metric_label:label,
         project:p, value:round2(getValue(p)), formatted_value:fmt(p),
@@ -252,8 +253,9 @@ class PortfolioRankingCapability {
 // ═══════════════════════════════════════════════════════════════
 class PortfolioAllocationCapability {
   constructor() { this.name='PortfolioAllocationCapability'; this.health='HEALTHY'; }
-  execute(capCtx, projects) {
+  execute(capCtx) {
     const metrics = capCtx.createMetrics(this.name);
+    const projects = capCtx.projects();
     const allocations = Object.entries(AllocationProviders).map(([type, provider]) => {
       const sliceData = provider.execute(projects);
       return buildAllocationFromSlices(capCtx, type, 'revenue', sliceData);
@@ -268,8 +270,9 @@ class PortfolioAllocationCapability {
 // ═══════════════════════════════════════════════════════════════
 class PortfolioHealthCapability {
   constructor() { this.name='PortfolioHealthCapability'; this.health='HEALTHY'; }
-  execute(capCtx, projects) {
+  execute(capCtx) {
     const metrics = capCtx.createMetrics(this.name);
+    const projects = capCtx.projects();
     const result = {
       critical_projects: projects.filter(p=>p.health_level==='CRITICAL'),
       warning_projects:  projects.filter(p=>p.health_level==='WARNING')
@@ -286,8 +289,9 @@ class PortfolioComparisonCapability {
   constructor(strategy = new BasicComparisonStrategy()) {
     this.name='PortfolioComparisonCapability'; this.strategy=strategy; this.health='HEALTHY';
   }
-  execute(capCtx, projects) {
+  execute(capCtx) {
     const metrics = capCtx.createMetrics(this.name);
+    const projects = capCtx.projects();
     const result  = this.strategy.execute(projects);
     metrics.finish(result.comparisons?.length||0);
     return new CapabilityResult(result, metrics);
@@ -299,8 +303,10 @@ class PortfolioComparisonCapability {
 // ═══════════════════════════════════════════════════════════════
 class RuleRecommendationCapability {
   constructor() { this.name='RuleRecommendationCapability'; this.health='HEALTHY'; }
-  execute(capCtx, projects, comparison) {
+  execute(capCtx) {
     const metrics  = capCtx.createMetrics(this.name);
+    const projects   = capCtx.projects();
+    const comparison = capCtx.comparison() || {};
     const provider = RecommendationProviderRegistry.default;
     const result   = provider.generate(projects, comparison);
     metrics.finish(result.length);
