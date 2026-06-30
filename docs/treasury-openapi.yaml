@@ -1,0 +1,144 @@
+openapi: 3.0.3
+info:
+  title: Treasury Platform API
+  version: v1.0
+  description: |
+    Treasury Platform API — Sprint P4.1C.
+    Financial Operating System for the enterprise.
+    Reuses @incored/platform-core entirely. Contract v1.0 FROZEN.
+servers:
+  - url: https://incored-api.onrender.com/api/treasury
+security:
+  - bearerAuth: []
+tags:
+  - name: Platform
+  - name: Cash
+  - name: Forecast
+  - name: Risk
+  - name: Calendar
+
+paths:
+  /health:
+    get:
+      tags: [Platform]
+      summary: Engine health — capability registry + dependency graph status
+      security: []
+      responses:
+        '200': { description: PlatformHealthDTO extended with treasury fields }
+
+  /capabilities:
+    get:
+      tags: [Platform]
+      summary: Capability discovery — 10 registered capabilities + execution order
+      security: []
+      responses:
+        '200': { description: CapabilityDescriptorDTO[] }
+
+  /dashboard:
+    get:
+      tags: [Cash]
+      summary: Treasury dashboard — primary Treasury Workspace endpoint
+      parameters: [ { $ref: '#/components/parameters/company_id' }, { $ref: '#/components/parameters/fiscal_period' } ]
+      responses:
+        '200': { description: TreasuryDashboardDTO }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/AuthorizationError' }
+
+  /cash-position:
+    get:
+      tags: [Cash]
+      summary: Current/available/restricted cash
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: CashPositionDTO } }
+
+  /liquidity:
+    get:
+      tags: [Cash]
+      summary: Liquidity score, ratio, burn rate, runway
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: LiquidityDTO } }
+
+  /forecast:
+    get:
+      tags: [Forecast]
+      summary: Cash flow projection (rule-based v1.0, AI-ready)
+      parameters:
+        - $ref: '#/components/parameters/company_id'
+        - name: horizon
+          in: query
+          schema: { type: string, enum: [DAYS_7,DAYS_30,DAYS_90,DAYS_365], default: DAYS_30 }
+      responses: { '200': { description: CashForecastDTO (is_projection always true) } }
+
+  /payments:
+    get:
+      tags: [Calendar]
+      summary: Upcoming/overdue/scheduled payments
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: PaymentCalendarDTO } }
+
+  /collections:
+    get:
+      tags: [Calendar]
+      summary: Expected collections with probability scoring
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: CollectionCalendarDTO } }
+
+  /fx-exposure:
+    get:
+      tags: [Risk]
+      summary: Currency exposure (reserved for multi-currency)
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: FXExposureDTO } }
+
+  /working-capital:
+    get:
+      tags: [Cash]
+      summary: AR + Inventory + Cash - AP
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: WorkingCapitalDTO } }
+
+  /risk:
+    get:
+      tags: [Risk]
+      summary: 6-dimension weighted treasury risk
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: TreasuryRiskDTO } }
+
+  /health-status:
+    get:
+      tags: [Risk]
+      summary: 5-dimension treasury health composite
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: TreasuryHealthDTO } }
+
+  /bank-accounts:
+    get:
+      tags: [Cash]
+      summary: Bank account list (reserved — empty until migration)
+      parameters: [ { $ref: '#/components/parameters/company_id' } ]
+      responses: { '200': { description: BankAccountDTO[] } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    company_id:
+      name: company_id
+      in: query
+      required: true
+      schema: { type: integer, minimum: 1 }
+    fiscal_period:
+      name: fiscal_period
+      in: query
+      schema: { type: string, pattern: '^\d{4}-\d{2}$', example: '2026-06' }
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            properties:
+              success: { type: boolean, example: false }
+              error: { type: object, properties: { code: { type: string }, message: { type: string } } }
+    AuthorizationError:
+      description: Company access denied
