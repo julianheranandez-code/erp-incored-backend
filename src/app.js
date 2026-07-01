@@ -185,6 +185,7 @@ app.use('/api/financial', require('./routes/financial'));
 app.use('/api/executive', require('./routes/executive'));
 
 app.use('/api/portfolio', require('./routes/portfolio'));
+app.use('/api/treasury-v4', require('./routes/treasury'));
 
 app.use(notFoundHandler);
 
