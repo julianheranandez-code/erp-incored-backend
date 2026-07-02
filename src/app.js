@@ -152,6 +152,7 @@ app.use('/api/expenses', expensesRoutes);
 app.use('/api/pmo', pmoRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/admin/cleanup', require('./routes/adminCleanup'));
+app.use('/api/treasury-v4', require('./routes/treasury'));
 app.use('/api', attachmentsRoutes);
 
 // CRM leads attachments alias
@@ -185,7 +186,7 @@ app.use('/api/financial', require('./routes/financial'));
 app.use('/api/executive', require('./routes/executive'));
 
 app.use('/api/portfolio', require('./routes/portfolio'));
-app.use('/api/treasury-v4', require('./routes/treasury'));
+
 
 app.use(notFoundHandler);
 
