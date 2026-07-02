@@ -1,0 +1,10 @@
+{
+  "name": "@incored/platform-certification",
+  "version": "1.0.0",
+  "description": "Incored Enterprise Platform Certification Kit",
+  "main": "src/index.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "node": ">=18.0.0" },
+  "dependencies": { "uuid": "^9.0.0" }
+}
