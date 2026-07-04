@@ -152,6 +152,7 @@ app.use('/api/expenses', expensesRoutes);
 app.use('/api/pmo', pmoRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/admin/cleanup', require('./routes/adminCleanup'));
+app.use('/api/documents', require('./routes/documents'));
 app.use('/api/treasury-v4', require('./routes/treasury'));
 app.use('/api', attachmentsRoutes);
 
