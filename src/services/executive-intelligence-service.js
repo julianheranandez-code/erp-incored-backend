@@ -43,27 +43,19 @@ async function getExecutiveInsights(companyId, filters={}, reqId=uuidv4(), corrI
 
 // ─── MODULE 2: RANKINGS ──────────────────────────────────────
 async function getExecutiveRankings(companyId, filters={}, reqId=uuidv4(), corrId=uuidv4()) {
-  const ctx   = await ExecutiveContextFactory.build(companyId, filters, reqId, corrId);
-  const start = Date.now();
-  const projects = ctx.raw.by_event_type?.REVENUE?.length
-    ? ctx.raw           // already have project breakdown
-    : ctx.raw;
-
-  // Rankings from context — no additional Financial Platform calls
-  const byRevenue = (await import('./financial-query-service')
-    .catch(()=>require('./financial-query-service')))
-    .getRevenue ? [] : [];
-
-  // Use revenue by_project already in context summary
-  const revenueProjects = ctx.summary?.by_event_type?.REVENUE || [];
+  const ctx      = await ExecutiveContextFactory.build(companyId, filters, reqId, corrId);
+  const start    = Date.now();
+  const queryService = require('./financial-query-service');
+  const revenueData  = await queryService.getRevenue(companyId, filters);
+  const byRevenue    = [...(revenueData.by_project || [])].sort((a,b) => b.total_amount_base - a.total_amount_base);
 
   const buildRank = (items, metric, label, getValue, fmt) =>
     items.map((p, i) => ({
       meta:                  ctx.buildMeta(Date.now()-start),
       rank:                  i + 1,
       entity_type:           'PROJECT',
-      entity_id:             p.project_id || p.entity_id,
-      entity_name:           `Project #${p.project_id || p.entity_id}`,
+      entity_id:             p.project_id,
+      entity_name:           `Project #${p.project_id}`,
       metric,                metric_label: label,
       value:                 round2(getValue(p)),
       formatted_value:       fmt(p),
@@ -74,14 +66,20 @@ async function getExecutiveRankings(companyId, filters={}, reqId=uuidv4(), corrI
       fiscal_period:         ctx.fiscalPeriod
     }));
 
+  const topByRevenue = buildRank(
+    byRevenue.slice(0,5), 'REVENUE', 'Revenue',
+    p => p.total_amount_base, p => toMXN(p.total_amount_base)
+  );
+
   logger.info('[IntelligenceEngine] getExecutiveRankings', {
-    company_id: companyId, request_id: reqId, execution_ms: Date.now()-start
+    company_id: companyId, request_id: reqId,
+    projects_ranked: byRevenue.length, execution_ms: Date.now()-start
   });
 
   return {
-    top_projects_by_revenue:   [], // RULE 8
-    top_projects_by_margin:    [], // RULE 8
-    bottom_projects_by_margin: [], // RULE 8
+    top_projects_by_revenue:   topByRevenue,
+    top_projects_by_margin:    [],
+    bottom_projects_by_margin: [],
   };
 }
 
