@@ -1,131 +1,86 @@
 'use strict';
 /**
- * Executive Intelligence Controller — Sprint 6.4C
- * ADR-027: API Facade Pattern — controller calls Engine only.
- * No business logic. No SQL. No KPI calculations.
+ * Executive Intelligence Controller v2 — Sprint P4.0B
+ * Migrated to @incored/platform-core pattern.
+ * ADR-062: Platform API Adapter Pattern
+ *
+ * BEFORE: custom withExecutiveAuth, executive-intelligence-response-factory.js
+ * AFTER:  withPlatformAuth() — identical to Financial, Portfolio, Treasury
  */
 const { v4: uuidv4 } = require('uuid');
-const engine       = require('../services/executive-intelligence-service');
-const { authorizeCompanyAccess, AuthorizationError }
-                   = require('../services/financial-authorization-service');
-const { validateCompanyId, parseExecutiveFilters, ValidationError }
-                   = require('../validators/executive-intelligence-validator');
-const factory      = require('../utils/executive-intelligence-response-factory');
-const logger       = require('../utils/logger');
+const engine   = require('../services/executive-intelligence-service');
+const registry = require('../services/provider-registry');
 
-// ADR-028: RequestContext — immutable, passed through API layer
-function buildRequestContext(req) {
-  return Object.freeze({
-    requestId:      req.id || uuidv4(),
-    correlationId:  req.headers['x-correlation-id'] || uuidv4(),
-    userId:         req.user?.id,
-    companyId:      null,     // set after authorization
-    permissions:    req.user?.permissions || [],
-    locale:         req.headers['accept-language'] || 'es-MX',
-    timezone:       req.headers['x-timezone'] || 'America/Mexico_City',
-    startTime:      Date.now()
-  });
+// MODULE 8: Platform Core — reuse, never duplicate
+const {
+  withPlatformAuth, PlatformResponseFactory,
+  buildPlatformHealthDTO, buildPlatformRequestContext
+} = require('../utils/platform-api-adapter');
+
+// Standard validate function for executive endpoints
+function executiveValidate(req) {
+  const companyId = parseInt(req.query.company_id);
+  if (!companyId || isNaN(companyId) || companyId < 1) {
+    const err = new Error('company_id must be a positive integer.');
+    err.name = 'ValidationError'; err.code = 'INVALID_COMPANY_ID'; err.statusCode = 400;
+    throw err;
+  }
+  const filters = {};
+  if (req.query.fiscal_period)      filters.fiscal_period      = req.query.fiscal_period;
+  if (req.query.fiscal_period_from) filters.fiscal_period_from = req.query.fiscal_period_from;
+  if (req.query.fiscal_period_to)   filters.fiscal_period_to   = req.query.fiscal_period_to;
+  if (req.query.groupBy)            filters.group_by_period    = req.query.groupBy;
+  if (req.query.project_id)         filters.project_id         = parseInt(req.query.project_id);
+  return { companyId, filters };
 }
 
-// Base handler — ADR-027 Facade: validates → authorizes → calls Engine → responds
-function withExecutiveAuth(endpoint, engineFn) {
-  return async (req, res, next) => {
-    const reqCtx    = buildRequestContext(req);
-    const valStart  = Date.now();
+// ── ENDPOINTS (Facade one-liners — ADR-062) ──────────────────
+const getDashboard = withPlatformAuth('GET /executive/dashboard',
+  executiveValidate, (id,f) => engine.getExecutiveDashboard(id, f));
 
-    try {
-      // 1. Validate
-      const companyId = validateCompanyId(req.query.company_id);
-      const filters   = parseExecutiveFilters(req.query);
-      const validationMs = Date.now() - valStart;
+const getInsights  = withPlatformAuth('GET /executive/insights',
+  executiveValidate, (id,f,req,ctx) => engine.getExecutiveInsights(id, f, ctx.requestId, ctx.correlationId));
 
-      // 2. Authorize (reuse Financial Authorization Service — no duplication)
-      await authorizeCompanyAccess(req.user, companyId);
+const getAlerts    = withPlatformAuth('GET /executive/alerts',
+  executiveValidate, (id,f,req,ctx) => engine.getExecutiveAlerts(id, f, ctx.requestId, ctx.correlationId));
 
-      // 3. Call Engine (only the Engine — never Financial Platform directly)
-      const engineStart = Date.now();
-      const data        = await engineFn(companyId, filters, reqCtx.requestId, reqCtx.correlationId);
-      const engineMs    = Date.now() - engineStart;
-      const executionMs = Date.now() - reqCtx.startTime;
+const getRankings  = withPlatformAuth('GET /executive/rankings',
+  executiveValidate, (id,f,req,ctx) => engine.getExecutiveRankings(id, f, ctx.requestId, ctx.correlationId));
 
-      // 4. Observe
-      logger.info(`[ExecutiveAPI] ${endpoint}`, {
-        endpoint, company_id: companyId, user_id: reqCtx.userId,
-        request_id: reqCtx.requestId, correlation_id: reqCtx.correlationId,
-        execution_ms: executionMs, engine_ms: engineMs,
-        validation_ms: validationMs, http_status: 200
-      });
+const getTrends    = withPlatformAuth('GET /executive/trends',
+  executiveValidate, (id,f,req,ctx) => engine.getExecutiveTrends(id, f, ctx.requestId, ctx.correlationId));
 
-      // 5. Respond
-      return factory.success(res, data, {
-        ...reqCtx, companyId, filters, executionMs, engineMs, validationMs
-      });
+const getRisk      = withPlatformAuth('GET /executive/risk',
+  executiveValidate, (id,f,req,ctx) => engine.getExecutiveRisk(id, f, ctx.requestId, ctx.correlationId));
 
-    } catch(e) {
-      const executionMs = Date.now() - reqCtx.startTime;
-      const statusMap = {
-        ValidationError:            400,
-        AuthorizationError:         403,
-        CompanyNotFound:            404,
-        InsufficientFinancialData:  422,
-        InvalidFiscalPeriod:        400,
-      };
-      const status = statusMap[e.name] || 500;
-      const code   = e.code  || 'INTERNAL_ERROR';
-      const msg    = status < 500 ? e.message : 'An internal error occurred.';
+const getPortfolio = withPlatformAuth('GET /executive/portfolio',
+  executiveValidate, (id,f,req,ctx) => engine.getPortfolioSummary(id, f, [], ctx.requestId, ctx.correlationId));
 
-      logger.warn(`[ExecutiveAPI] ${endpoint} ${e.name}`, {
-        endpoint, user_id: reqCtx.userId,
-        request_id: reqCtx.requestId, correlation_id: reqCtx.correlationId,
-        code, execution_ms: executionMs, http_status: status
-      });
-
-      if (status === 500) return next(e);
-      return factory.error(res, status, code, msg, reqCtx);
-    }
-  };
-}
-
-// ── ENDPOINTS (ADR-027: one-liner Facade calls) ──────────────
-const getDashboard = withExecutiveAuth('GET /dashboard',
-  (id, f, r, c) => engine.getExecutiveDashboard(id, f));
-
-const getInsights  = withExecutiveAuth('GET /insights',
-  (id, f, r, c) => engine.getExecutiveInsights(id, f, r, c));
-
-const getAlerts    = withExecutiveAuth('GET /alerts',
-  (id, f, r, c) => engine.getExecutiveAlerts(id, f, r, c));
-
-const getRankings  = withExecutiveAuth('GET /rankings',
-  (id, f, r, c) => engine.getExecutiveRankings(id, f, r, c));
-
-const getTrends    = withExecutiveAuth('GET /trends',
-  (id, f, r, c) => engine.getExecutiveTrends(id, f, r, c));
-
-const getRisk      = withExecutiveAuth('GET /risk',
-  (id, f, r, c) => engine.getExecutiveRisk(id, f, r, c));
-
-const getPortfolio = withExecutiveAuth('GET /portfolio',
-  (id, f, r, c) => engine.getPortfolioSummary(id, f, [], r, c));
-
-// CHANGE 5 — Health endpoint (no financial data)
+// Health endpoint (no auth — ADR-063)
 async function getHealth(req, res) {
-  const registry = require('../services/provider-registry');
-  return res.json({
-    success: true,
-    data: {
-      status:                'healthy',
-      engine_version:        '6.4B-v1.0',
-      schema_version:        'v1.0',
-      configuration_provider:'StaticConfigurationProvider',
-      registered_providers: {
-        insight_provider:  registry.insightProvider?.name  || 'unknown',
-        alert_provider:    registry.alertProvider?.name    || 'unknown',
-        risk_strategy:     registry.riskStrategy?.name     || 'unknown',
-        portfolio_provider:registry.portfolioProvider?.name|| 'unknown',
-      },
-      capabilities: ['dashboard','insights','alerts','rankings','trends','risk','portfolio'],
-      timestamp: new Date().toISOString()
+  const dto = buildPlatformHealthDTO({
+    platform:            'incored-erp',
+    platform_version:    'v3.9',
+    engine_version:      '6.4B-v1.0',
+    pipeline_version:    '6.4B-v1.0',
+    registry_version:    '1.0',
+    execution_model:     'PROVIDER_REGISTRY',
+    capabilities:        ['dashboard','insights','alerts','rankings','trends','risk','portfolio'],
+    capability_health:   {
+      insight_provider:  registry.insightProvider?.name  ? 'HEALTHY' : 'UNKNOWN',
+      alert_provider:    registry.alertProvider?.name    ? 'HEALTHY' : 'UNKNOWN',
+      risk_strategy:     registry.riskStrategy?.name     ? 'HEALTHY' : 'UNKNOWN',
+      portfolio_provider:registry.portfolioProvider?.name? 'HEALTHY' : 'UNKNOWN',
+    },
+    status: 'healthy'
+  });
+  return PlatformResponseFactory.health(res, {
+    ...dto,
+    registered_providers: {
+      insight_provider:   registry.insightProvider?.name  || 'unknown',
+      alert_provider:     registry.alertProvider?.name    || 'unknown',
+      risk_strategy:      registry.riskStrategy?.name     || 'unknown',
+      portfolio_provider: registry.portfolioProvider?.name|| 'unknown',
     }
   });
 }
