@@ -8,9 +8,10 @@ const router  = express.Router();
 const { verifyToken } = require('../middleware/auth');
 const ctrl    = require('../controllers/executive-intelligence-controller');
 
-router.use(verifyToken);
-
 router.get('/health',    ctrl.getHealth);      // no RBAC — monitoring only
+router.get('/capabilities', ctrl.getHealth);  // alias
+
+router.use(verifyToken);
 router.get('/dashboard', ctrl.getDashboard);
 router.get('/insights',  ctrl.getInsights);
 router.get('/alerts',    ctrl.getAlerts);
