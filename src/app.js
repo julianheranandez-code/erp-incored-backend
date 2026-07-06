@@ -78,22 +78,20 @@ const allowedOrigins = [
   'http://localhost:5173',   // Vite dev
 ].filter(Boolean);
 
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://incored-julian-erp.lovable.app'
-  ],
-  credentials: true
-}));
+const { corsOriginValidator, securityHeaders, sanitizeRequest, authLimiter, uploadLimiter } = require('./middleware/security-middleware');
+app.use(cors({ origin: corsOriginValidator, credentials: true }));
 
+
+// ─── Security Headers + Sanitizer
+app.use(securityHeaders);
+app.use(sanitizeRequest);
 
 // ─── Compression ──────────────────────────────────────────────────────────────
 app.use(compression());
 
 // ─── Body Parsers ─────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 if (process.env.NODE_ENV !== 'test') {
@@ -137,7 +135,7 @@ app.get('/health/db', async (req, res) => {
 });
 
 // ─── API Routes ───────────────────────────────────────────────────────────────
-app.use('/api/auth',         authRoutes);
+app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/users',        usersRoutes);
 app.use('/api/projects',     projectsRoutes);
 app.use('/api/tasks',        tasksRoutes);
