@@ -15,6 +15,8 @@
  */
 
 const { v4: uuidv4 } = require('uuid');
+const toMXN = v => (v||0).toLocaleString('es-MX',{style:'currency',currency:'MXN',maximumFractionDigits:0});
+const round2 = n => Math.round((parseFloat(n||0)+Number.EPSILON)*100)/100;
 const { ExecutiveContextFactory } = require('./executive-intelligence-context');
 const registry   = require('./provider-registry');
 const pnlService = require('./financial-pnl-service');
