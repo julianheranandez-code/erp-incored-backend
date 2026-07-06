@@ -79,12 +79,17 @@ const allowedOrigins = [
 ].filter(Boolean);
 
 const { corsOriginValidator, securityHeaders, sanitizeRequest, authLimiter, uploadLimiter } = require('./middleware/security-middleware');
+const { requestContext, performanceLogger, readinessHandler, livenessHandler } = require('./middleware/observability-middleware');
 app.use(cors({ origin: corsOriginValidator, credentials: true }));
 
 
 // ─── Security Headers + Sanitizer
 app.use(securityHeaders);
 app.use(sanitizeRequest);
+
+// ─── Observability
+app.use(requestContext);
+app.use(performanceLogger);
 
 // ─── Compression ──────────────────────────────────────────────────────────────
 app.use(compression());
@@ -110,6 +115,8 @@ app.use('/api/', generalLimiter);
 app.use('/uploads', express.static(require('path').join(process.cwd(), 'uploads')));
 
 // ─── Health Checks ────────────────────────────────────────────────────────────
+app.get('/ready', readinessHandler);
+app.get('/live',  livenessHandler);
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
