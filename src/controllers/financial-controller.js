@@ -1,184 +1,120 @@
 'use strict';
-
 /**
- * Financial Controller v2 — Sprint 6.1C.1
- * ==========================================
- * ORCHESTRATION ONLY. No SQL. No KPIs.
+ * Financial Controller v2 — Sprint P4.0B
+ * Migrated to @incored/platform-core pattern.
+ * ADR-062: Platform API Adapter Pattern
  *
- * Request lifecycle:
- *   1. Attach request_id + correlation_id (middleware)
- *   2. Authorize company access (AuthorizationService)
- *   3. Parse filters (FilterParser)
- *   4. Call Analytics or Query Layer
- *   5. Return response (ResponseFactory)
- *   6. Log structured event
+ * BEFORE: custom try/catch, api-response.js, manual request context
+ * AFTER:  withPlatformAuth() — same pattern as Portfolio + Treasury
+ * ZERO business logic. ZERO duplication.
  */
-
 const summaryService = require('../services/financial-summary-service');
 const pnlService     = require('../services/financial-pnl-service');
 const queryService   = require('../services/financial-query-service');
-const { authorizeCompanyAccess, AuthorizationError }
-                     = require('../services/financial-authorization-service');
-const { parseFinancialFilters } = require('../utils/financial-filter-parser');
-const response       = require('../utils/api-response');
-const logger         = require('../utils/logger');
+const { authorizeCompanyAccess } = require('../services/financial-authorization-service');
+const { parseFinancialFilters }  = require('../utils/financial-filter-parser');
+const logger = require('../utils/logger');
 
-// ─── BASE HANDLER ─────────────────────────────────────────────
-/**
- * Wraps every controller action with:
- *   - Authorization
- *   - Filter parsing
- *   - Timing
- *   - Structured logging
- *   - Error handling (AuthorizationError → 403, else → next())
- */
-function withFinancialAuth(endpoint, serviceFn) {
-  return async (req, res, next) => {
-    const start = Date.now();
-    const rid   = req.id          || require('crypto').randomUUID();
-    const cid   = req.headers['x-correlation-id'] || require('crypto').randomUUID();
+// MODULE 8: Platform Core — reuse, never duplicate
+const {
+  withPlatformAuth, PlatformResponseFactory,
+  buildPlatformRequestContext
+} = require('../utils/platform-api-adapter');
 
-    try {
-      const companyId = await authorizeCompanyAccess(req.user, req.query.company_id);
-      const filters   = parseFinancialFilters(req.query);
-
-      const data = await serviceFn(companyId, filters, req);
-
-      const ms = Date.now() - start;
-      logger.info(`[FinancialAPI] ${endpoint}`, {
-        endpoint, company_id: companyId, user_id: req.user.id,
-        request_id: rid, correlation_id: cid, execution_ms: ms,
-        http_status: 200
-      });
-
-      return response.success(res, data, {
-        company_id: companyId, filters,
-        request_id: rid, correlation_id: cid, execution_ms: ms
-      });
-
-    } catch(e) {
-      const ms = Date.now() - start;
-      if (e instanceof AuthorizationError) {
-        logger.warn(`[FinancialAPI] ${endpoint} DENIED`, {
-          endpoint, user_id: req.user?.id,
-          request_id: rid, correlation_id: cid,
-          code: e.code, execution_ms: ms, http_status: e.statusCode
-        });
-        return response.error(res, e.statusCode, e.code, e.message,
-          { request_id: rid, correlation_id: cid });
-      }
-      next(e);
-    }
-  };
+// Standard validate function for financial endpoints
+function financialValidate(req) {
+  const companyId = parseInt(req.query.company_id);
+  if (!companyId || isNaN(companyId) || companyId < 1) {
+    const err = new Error('company_id must be a positive integer.');
+    err.name = 'ValidationError'; err.code = 'INVALID_COMPANY_ID'; err.statusCode = 400;
+    throw err;
+  }
+  const filters = parseFinancialFilters(req.query);
+  return { companyId, filters };
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT HANDLERS — each is a one-liner
-// ═══════════════════════════════════════════════════════════════
+// ── ENDPOINTS (Facade one-liners — ADR-062) ──────────────────
+const getSummary = withPlatformAuth('GET /financial/summary',
+  financialValidate,
+  (id, f) => summaryService.getFinancialSummary(id, f)
+);
 
-const getSummary = withFinancialAuth('GET /summary',
-  (companyId, filters) => summaryService.getFinancialSummary(companyId, filters));
+const getRevenue = withPlatformAuth('GET /financial/revenue',
+  financialValidate,
+  (id, f) => queryService.getRevenue(id, f)
+);
 
-const getRevenue = withFinancialAuth('GET /revenue',
-  (companyId, filters) => queryService.getRevenue(companyId, filters));
+const getExpenses = withPlatformAuth('GET /financial/expenses',
+  financialValidate,
+  (id, f) => queryService.getOperatingExpenses(id, f)
+);
 
-const getExpenses = withFinancialAuth('GET /expenses',
-  (companyId, filters) => queryService.getOperatingExpenses(companyId, filters));
-
-const getCashFlow = withFinancialAuth('GET /cash-flow',
-  async (companyId, filters) => {
+const getCashFlow = withPlatformAuth('GET /financial/cash-flow',
+  financialValidate,
+  async (id, f) => {
     const [inflows, outflows] = await Promise.all([
-      queryService.getCashInflows(companyId, filters),
-      queryService.getCashOutflows(companyId, filters)
+      queryService.getCashInflows(id, f),
+      queryService.getCashOutflows(id, f)
     ]);
     return { inflows, outflows };
-  });
+  }
+);
 
-const getLiabilities = withFinancialAuth('GET /liabilities',
-  (companyId, filters) => queryService.getLiabilities(companyId, filters));
+const getLiabilities = withPlatformAuth('GET /financial/liabilities',
+  financialValidate,
+  (id, f) => queryService.getLiabilities(id, f)
+);
 
-const getCommitments = withFinancialAuth('GET /commitments',
-  (companyId, filters) => queryService.getCommitments(companyId, filters));
+const getCommitments = withPlatformAuth('GET /financial/commitments',
+  financialValidate,
+  (id, f) => queryService.getCommitments(id, f)
+);
 
-// Project endpoint — needs projectId from params
+const getPnL = withPlatformAuth('GET /financial/pnl',
+  financialValidate,
+  (id, f) => pnlService.getProfitLoss(id, f)
+);
+
+const getTrends = withPlatformAuth('GET /financial/trends',
+  financialValidate,
+  async (id, f, req) => {
+    const from = req.query.fiscal_period_from;
+    const to   = req.query.fiscal_period_to;
+    const groupBy = req.query.groupBy || 'month';
+    if (!from || !to) {
+      const err = new Error('fiscal_period_from and fiscal_period_to required for trends');
+      err.name = 'ValidationError'; err.code = 'INVALID_FISCAL_PERIOD'; err.statusCode = 400;
+      throw err;
+    }
+    return summaryService.getPeriodTrend(id, from, to, groupBy);
+  }
+);
+
+// Project summary — keeps custom handler (needs :projectId param)
 async function getProjectSummary(req, res, next) {
-  const start = Date.now();
-  const rid   = req.id || require('crypto').randomUUID();
-  const cid   = req.headers['x-correlation-id'] || require('crypto').randomUUID();
-
+  const reqCtx = buildPlatformRequestContext(req);
   try {
-    const companyId  = await authorizeCompanyAccess(req.user, req.query.company_id);
-    const projectId  = parseInt(req.params.projectId);
+    const companyId = parseInt(req.query.company_id);
+    const projectId = parseInt(req.params.projectId);
+    if (!companyId || isNaN(companyId))
+      return PlatformResponseFactory.error(res, 400, 'INVALID_COMPANY_ID', 'company_id required', reqCtx);
     if (!projectId || isNaN(projectId))
-      return response.error(res, 400, 'INVALID_PROJECT',
-        'projectId must be a valid integer.', { request_id: rid, correlation_id: cid });
-
+      return PlatformResponseFactory.error(res, 400, 'INVALID_PROJECT_ID', 'projectId required', reqCtx);
+    await authorizeCompanyAccess(req.user, companyId);
     const filters = parseFinancialFilters(req.query);
-    const data    = await summaryService.getProjectSummary(companyId, projectId, filters);
-    const ms = Date.now() - start;
-
-    logger.info('[FinancialAPI] GET /project', {
-      endpoint: 'GET /project', company_id: companyId,
-      project_id: projectId, user_id: req.user.id,
-      request_id: rid, correlation_id: cid, execution_ms: ms, http_status: 200
-    });
-
-    return response.success(res, data, {
-      company_id: companyId, project_id: projectId,
-      filters, request_id: rid, correlation_id: cid, execution_ms: ms
+    const data    = await pnlService.getProjectProfitLoss(companyId, projectId, filters);
+    return PlatformResponseFactory.success(res, data, {
+      ...reqCtx, companyId, executionMs: Date.now()-reqCtx.startTime
     });
   } catch(e) {
-    if (e instanceof AuthorizationError)
-      return response.error(res, e.statusCode, e.code, e.message,
-        { request_id: rid, correlation_id: cid });
+    if (e.name === 'ValidationError' || e.name === 'AuthorizationError')
+      return PlatformResponseFactory.error(res, e.statusCode||400, e.code||'ERROR', e.message, reqCtx);
     next(e);
   }
 }
-
-// Trends endpoint — needs from/to validation
-async function getTrends(req, res, next) {
-  const start = Date.now();
-  const rid   = req.id || require('crypto').randomUUID();
-  const cid   = req.headers['x-correlation-id'] || require('crypto').randomUUID();
-
-  try {
-    const companyId = await authorizeCompanyAccess(req.user, req.query.company_id);
-    const from      = req.query.fiscal_period_from;
-    const to        = req.query.fiscal_period_to;
-    const groupBy   = ['month','quarter','year'].includes(req.query.groupBy)
-      ? req.query.groupBy : 'month';
-
-    if (!from || !to)
-      return response.error(res, 400, 'PERIOD_REQUIRED',
-        'fiscal_period_from and fiscal_period_to are required for trends.',
-        { request_id: rid, correlation_id: cid });
-
-    const data = await summaryService.getPeriodTrend(companyId, from, to, groupBy);
-    const ms   = Date.now() - start;
-
-    logger.info('[FinancialAPI] GET /trends', {
-      endpoint: 'GET /trends', company_id: companyId,
-      user_id: req.user.id, request_id: rid, correlation_id: cid,
-      execution_ms: ms, http_status: 200, periods: data.length
-    });
-
-    return response.success(res, data, {
-      company_id: companyId, group_by: groupBy, from, to,
-      request_id: rid, correlation_id: cid, execution_ms: ms
-    });
-  } catch(e) {
-    if (e instanceof AuthorizationError)
-      return response.error(res, e.statusCode, e.code, e.message,
-        { request_id: rid, correlation_id: cid });
-    next(e);
-  }
-}
-
-const getPnL = withFinancialAuth('GET /pnl',
-  (companyId, filters) => pnlService.getProfitLoss(companyId, filters));
 
 module.exports = {
   getSummary, getRevenue, getExpenses, getCashFlow,
-  getLiabilities, getCommitments, getProjectSummary, getTrends,
-  getPnL
+  getLiabilities, getCommitments, getPnL, getTrends,
+  getProjectSummary
 };
