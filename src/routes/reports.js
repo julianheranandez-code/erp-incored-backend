@@ -13,7 +13,7 @@ const { exportLimiter } = require('../middleware/rateLimit');
 router.use(verifyToken, auditLog);
 
 // Helper: get company ID respecting multi-company admin access
-const getCompanyId = (req) => req.user.role === 'admin' ? (req.query.company_id || null) : req.user.company_id;
+const getCompanyId = (req) => (req.user.role === 'admin' || req.user.role === 'super_admin') ? (req.query.company_id || null) : req.user.company_id;
 
 // ─── DASHBOARDS ───────────────────────────────────────────────────────────────
 

@@ -33,7 +33,7 @@ router.get('/', async (req, res, next) => {
     const { company_id, role, status, search } = req.query;
 
     const result = await User.findAll({
-      companyId: req.user.role === 'admin' ? company_id : req.user.company_id,
+      companyId: (req.user.role === 'admin' || req.user.role === 'super_admin') ? company_id : req.user.company_id,
       role,
       status,
       search,
@@ -208,7 +208,7 @@ router.get('/:id/permissions', async (req, res, next) => {
         user_id: id,
         role: user.role,
         modules: permissions,
-        companies: req.user.role === 'admin' ? 'all' : [user.company_id],
+        companies: (req.user.role === 'admin' || req.user.role === 'super_admin') ? 'all' : [user.company_id],
       },
     });
   } catch (error) { next(error); }
