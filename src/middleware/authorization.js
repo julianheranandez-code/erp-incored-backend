@@ -12,6 +12,7 @@ const ROLE_HIERARCHY = {
   finance: 4,
   hr: 4,
   admin: 99,
+  super_admin: 100,
 };
 
 // Module permission matrix per role
@@ -106,8 +107,8 @@ const authorize = (...allowedRoles) => {
 
     const userRole = req.user.role;
 
-    // Admin always passes
-    if (userRole === 'admin') return next();
+    // Admin and super_admin always pass
+    if (userRole === 'admin' || userRole === 'super_admin') return next();
 
     if (!allowedRoles.includes(userRole)) {
       logger.warn(`Access denied for user ${req.user.id} (${userRole}) to ${req.method} ${req.path}`);
@@ -136,6 +137,7 @@ const authorizeMinRole = (minimumRole) => {
       });
     }
 
+    if (req.user.role === 'super_admin') return next();
     const userLevel = ROLE_HIERARCHY[req.user.role] ?? -1;
     const requiredLevel = ROLE_HIERARCHY[minimumRole] ?? 99;
 
@@ -195,7 +197,7 @@ const authorizePermission = (module, action) => {
 const authorizeCompany = (getCompanyId) => {
   return async (req, res, next) => {
     if (!req.user) return res.status(401).json({ error: 'unauthorized' });
-    if (req.user.role === 'admin') return next();
+    if (req.user.role === 'admin' || req.user.role === 'super_admin') return next();
 
     try {
       const targetCompanyId = typeof getCompanyId === 'function'
