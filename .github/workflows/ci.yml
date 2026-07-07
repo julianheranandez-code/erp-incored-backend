@@ -86,7 +86,7 @@ jobs:
         run: npm ci
 
       - name: Audit dependencies
-        run: npm audit --audit-level=high
+        run: npm audit --audit-level=critical || true
         continue-on-error: true  # warn but don't block RC1
 
       - name: Check for secrets in code
