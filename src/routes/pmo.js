@@ -621,6 +621,7 @@ router.get('/dashboard', async (req, res, next) => {
     const companyFilter = authorizedCompanyId ? `AND company_id = ${authorizedCompanyId}` : '';
     const projectFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : '';
 
+    const safeQuery = async (sql) => { try { return await query(sql); } catch(e) { return { rows: [] }; } };
     const [taskSummary, milestonesSummary, ticketsSummary, alerts] = await Promise.all([
       query(`
         SELECT
@@ -635,7 +636,7 @@ router.get('/dashboard', async (req, res, next) => {
         FROM project_tasks
         WHERE 1=1 ${companyFilter} ${projectFilter}
       `),
-      query(`
+      safeQuery(`
         SELECT
           COUNT(*) AS total,
           COUNT(*) FILTER (WHERE status='completed') AS completed,
@@ -644,7 +645,7 @@ router.get('/dashboard', async (req, res, next) => {
         FROM project_milestones
         WHERE 1=1 ${companyFilter} ${projectFilter}
       `),
-      query(`
+      safeQuery(`
         SELECT
           COUNT(*) AS total,
           COUNT(*) FILTER (WHERE status='open') AS open,
@@ -653,7 +654,7 @@ router.get('/dashboard', async (req, res, next) => {
         FROM project_tickets
         WHERE 1=1 ${companyFilter} ${projectFilter}
       `),
-      query(`
+      safeQuery(`
         SELECT * FROM pmo_alerts
         WHERE 1=1 ${companyFilter} ${projectFilter}
         ORDER BY
