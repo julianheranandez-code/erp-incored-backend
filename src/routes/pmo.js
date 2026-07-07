@@ -621,9 +621,9 @@ router.get('/dashboard', async (req, res, next) => {
     const companyFilter = authorizedCompanyId ? `AND company_id = ${authorizedCompanyId}` : '';
     const projectFilter = project_id ? `AND project_id = ${parseInt(project_id)}` : '';
 
-    const safeQuery = async (sql) => { try { return await query(sql); } catch(e) { return { rows: [] }; } };
+    const safeQuery = async (sql) => { try { return await query(sql); } catch(e) { return { rows: [{}] }; } };
     const [taskSummary, milestonesSummary, ticketsSummary, alerts] = await Promise.all([
-      query(`
+      safeQuery(`
         SELECT
           COUNT(*) AS total,
           COUNT(*) FILTER (WHERE status='completed') AS completed,
