@@ -59,7 +59,10 @@ jobs:
         run: npm ci
 
       - name: Install certification kit deps
-        run: npm ci --prefix packages/platform-certification
+        run: |
+          cd packages/platform-certification
+          npm install
+          cd ../..
 
       - name: Run Platform Certification
         run: node run-certification.js
