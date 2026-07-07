@@ -18,7 +18,7 @@ const {
 router.use(verifyToken);
 
 function getAuthorizedCompanyId(user, queryCompanyId) {
-  if (user.role === 'admin') return queryCompanyId ? parseInt(queryCompanyId) : null;
+  if (user.role === 'admin' || user.role === 'super_admin') return queryCompanyId ? parseInt(queryCompanyId) : null;
   return parseInt(user.active_company_id || user.company_id || user.companyId);
 }
 
