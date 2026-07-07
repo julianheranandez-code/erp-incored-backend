@@ -11,7 +11,7 @@ router.use(verifyToken);
 
 // ─── ISOLATION HELPERS ────────────────────────────────────────
 function getAuthorizedCompanyId(user, requestedCompanyId) {
-  if (user.role === 'admin') return requestedCompanyId ? parseInt(requestedCompanyId) : null;
+  if (user.role === 'admin' || user.role === 'super_admin') return requestedCompanyId ? parseInt(requestedCompanyId) : null;
   return parseInt(user.company_id);
 }
 
