@@ -28,7 +28,7 @@ router.use(verifyToken, auditLog);
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
 
     const result = await Project.findAll({
       companyId,
