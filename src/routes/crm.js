@@ -32,7 +32,8 @@ router.use(verifyToken, auditLog);
 router.get('/clients', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const result = await Client.findAll({ type: 'cliente', search: req.query.search, page, limit });
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
+    const result = await Client.findAll({ type: 'cliente', search: req.query.search, companyId, page, limit });
     res.json({ success: true, ...buildPaginatedResponse(result.data, result.total, page, limit) });
   } catch (error) { next(error); }
 });
