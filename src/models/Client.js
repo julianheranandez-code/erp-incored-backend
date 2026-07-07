@@ -3,13 +3,14 @@
 const { query } = require('../config/database');
 
 class Client {
-  static async findAll({ type, search, page = 1, limit = 20 }) {
+  static async findAll({ type, search, companyId, page = 1, limit = 20 }) {
     const conditions = [];
     const params = [];
     let idx = 1;
 
     conditions.push(`is_active = true`);
 
+    if (companyId) { conditions.push(`company_id = $${idx++}`); params.push(parseInt(companyId)); }
     if (type) { conditions.push(`type = $${idx++}`); params.push(type); }
     if (search) {
       conditions.push(`(name ILIKE $${idx} OR rfc ILIKE $${idx} OR primary_contact_email ILIKE $${idx})`);
