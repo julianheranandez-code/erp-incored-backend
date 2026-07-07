@@ -28,7 +28,7 @@ router.use(verifyToken, auditLog);
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const result = await Employee.findAll({ companyId, status: req.query.status, department: req.query.department, search: req.query.search, page, limit });
     res.json({ success: true, ...buildPaginatedResponse(result.data, result.total, page, limit) });
   } catch (error) { next(error); }
@@ -158,7 +158,7 @@ router.post('/:id/contracts',
  */
 router.get('/vacations', async (req, res, next) => {
   try {
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const reqs = await Employee.getVacationRequests({
       employeeId: req.query.employee_id,
       status: req.query.status,
@@ -232,7 +232,7 @@ router.put('/vacations/:id',
  */
 router.get('/payroll', authorize('admin', 'finance', 'hr'), async (req, res, next) => {
   try {
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const result = await query(
       `SELECT pp.*, co.name AS company_name, CONCAT(u.first_name, ' ', u.last_name) AS created_by_name
        FROM payroll_periods pp

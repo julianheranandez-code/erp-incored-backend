@@ -27,7 +27,7 @@ router.use(verifyToken, auditLog);
 router.get('/', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const result = await Transaction.findAll({
       companyId, type: req.query.type, category: req.query.category,
       projectId: req.query.project_id, clientId: req.query.client_id,
@@ -125,7 +125,7 @@ router.put('/:id',
  */
 router.get('/reports/pnl', async (req, res, next) => {
   try {
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const year = req.query.year || new Date().getFullYear();
     const data = await Transaction.getPnL({ companyId, year, month: req.query.month });
     res.json({ success: true, data });
@@ -146,7 +146,7 @@ router.get('/reports/pnl', async (req, res, next) => {
  */
 router.get('/reports/cash-flow', async (req, res, next) => {
   try {
-    const companyId = req.user.role === 'admin' ? req.query.company_id : req.user.company_id;
+    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
     const data = await Transaction.getCashFlow({ companyId, months: parseInt(req.query.months) || 3 });
     res.json({ success: true, data });
   } catch (error) { next(error); }
