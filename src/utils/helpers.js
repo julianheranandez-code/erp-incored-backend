@@ -6,10 +6,13 @@
  * @param {number} count - Current project count
  * @returns {string} e.g. PRY-2025-001
  */
-const generateProjectCode = (companyId, count) => {
-  const year = new Date().getFullYear();
+const generateProjectCode = (companyId, count, clientCode = 'GEN') => {
+  const COMPANY_CODES = { 1:'INC', 2:'ZHD', 3:'INT', 4:'MKA' };
+  const company = COMPANY_CODES[parseInt(companyId)] || 'INC';
+  const now = new Date();
+  const yymm = String(now.getMonth()+1).padStart(2,'0') + String(now.getFullYear()).slice(-2);
   const num = String(count + 1).padStart(3, '0');
-  return `PRY-${year}-${num}`;
+  return `${company}-${clientCode.toUpperCase().slice(0,3)}-${yymm}-${num}`;
 };
 
 /**
