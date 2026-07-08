@@ -91,7 +91,17 @@ router.post('/',
       // Auto-generate code if not provided
       if (!req.body.code) {
         const count = await Project.getCount(req.body.company_id);
-        req.body.code = generateProjectCode(req.body.company_id, count);
+        let clientCode = 'GEN';
+        if (req.body.client_id) {
+          const clientResult = await query(
+            'SELECT name FROM clients WHERE id = $1', [parseInt(req.body.client_id)]
+          );
+          if (clientResult.rows[0]) {
+            clientCode = clientResult.rows[0].name
+              .replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 3);
+          }
+        }
+        req.body.code = generateProjectCode(req.body.company_id, count, clientCode);
       }
 
       const project = await Project.create(req.body, req.user.id);
