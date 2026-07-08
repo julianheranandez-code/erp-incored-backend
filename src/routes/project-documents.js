@@ -120,7 +120,7 @@ router.get('/:docId/download', async (req, res, next) => {
   try {
     const result = await query(
       'SELECT * FROM project_documents WHERE id=$1 AND project_id=$2',
-      [parseInt(req.params.docId), parseInt(req.params.projectId)]
+      [parseInt(req.params.docId), parseInt(req.query.project_id || req.params.projectId || 0)]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false,
       error: { code: 'NOT_FOUND', message: 'Document not found' } });
@@ -147,7 +147,7 @@ router.delete('/:docId', async (req, res, next) => {
   try {
     const result = await query(
       'DELETE FROM project_documents WHERE id=$1 AND project_id=$2 RETURNING *',
-      [parseInt(req.params.docId), parseInt(req.params.projectId)]
+      [parseInt(req.params.docId), parseInt(req.query.project_id || req.params.projectId || 0)]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false,
       error: { code: 'NOT_FOUND', message: 'Document not found' } });
