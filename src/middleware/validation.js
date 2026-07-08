@@ -176,6 +176,7 @@ const schemas = {
   // Clients
   createClient: Joi.object({
     name: Joi.string().min(2).max(255).trim().required(),
+    company_id: Joi.number().integer().positive().required(),
     type: Joi.string().valid('cliente', 'proveedor', 'ambos').default('cliente'),
     rfc: Joi.string().max(50).optional().allow(''),
     country: Joi.string().max(100).optional().allow(''),
