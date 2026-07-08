@@ -36,7 +36,7 @@ router.use(verifyToken);
 // GET /api/projects/:projectId/documents
 router.get('/', async (req, res, next) => {
   try {
-    const { projectId } = req.params;
+    const projectId = req.params.projectId || req.query.project_id;
     const { doc_type } = req.query;
     let sql = `SELECT pd.*, CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
                FROM project_documents pd
@@ -63,7 +63,7 @@ router.get('/types', (req, res) => {
 // POST /api/projects/:projectId/documents/upload
 router.post('/upload', upload.single('file'), async (req, res, next) => {
   try {
-    const { projectId } = req.params;
+    const projectId = req.params.projectId || req.query.project_id;
     if (!req.file) return res.status(400).json({ success: false,
       error: { code: 'NO_FILE', message: 'No file provided' } });
 
