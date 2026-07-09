@@ -21,6 +21,8 @@ const upload = multer({
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/vnd.ms-powerpoint',
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'image/jpeg','image/png','image/webp','image/tiff',
     ];
     if (allowed.includes(file.mimetype) || /\.(dwg|dxf|rvt|skp)$/i.test(file.originalname)) {
