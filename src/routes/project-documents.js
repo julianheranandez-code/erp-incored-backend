@@ -100,13 +100,19 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
     const projectResult = await query('SELECT company_id FROM projects WHERE id=$1', [parseInt(projectId)]);
     const companyId = projectResult.rows[0]?.company_id;
 
+    const expiryDate = req.body.expiry_date || null;
+    const comments   = req.body.comments || null;
+    const version    = req.body.version || null;
+
     const result = await query(
       `INSERT INTO project_documents
         (project_id, company_id, doc_type, original_name, s3_key, s3_bucket,
-         file_size, mime_type, uploaded_by, is_sensitive, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+         file_size, mime_type, uploaded_by, is_sensitive, notes,
+         expiry_date, comments, version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
       [parseInt(projectId), companyId, docType, req.file.originalname, key, bucket,
-       req.file.size, req.file.mimetype, req.user.id, isSensitive, notes]
+       req.file.size, req.file.mimetype, req.user.id, isSensitive, notes,
+       expiryDate, comments, version]
     );
 
     logger.info('[ProjectDocs] Uploaded', { project_id: projectId, doc_type: docType, key });
