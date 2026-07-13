@@ -66,7 +66,7 @@ class Project {
     const {
       code, name, client_id, company_id, pm_id, order_number,
       budget_amount, currency, expected_margin, country, city,
-      start_date, end_date_planned, description,
+      start_date, end_date_planned, description, project_type,
       budget_subcontractor, budget_materials, budget_inhouse,
       budget_allowance, budget_fuel, budget_tools, budget_others,
     } = data;
@@ -84,15 +84,15 @@ class Project {
       `INSERT INTO projects
          (code, name, client_id, company_id, pm_id, order_number, budget_amount,
           currency, expected_margin, country, city, start_date, end_date_planned,
-          description, created_by,
+          description, project_type, created_by,
           budget_subcontractor, budget_materials, budget_inhouse,
           budget_allowance, budget_fuel, budget_tools, budget_others)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        RETURNING *`,
       [code, name, client_id, company_id, pm_id || null, order_number || null,
        totalBudget, currency || 'MXN', expected_margin || null,
        country || null, city || null, start_date || null, end_date_planned || null,
-       description || null, createdBy,
+       description || null, data.project_type || null, createdBy,
        parseFloat(budget_subcontractor||0), parseFloat(budget_materials||0),
        parseFloat(budget_inhouse||0), parseFloat(budget_allowance||0),
        parseFloat(budget_fuel||0), parseFloat(budget_tools||0),
@@ -108,6 +108,7 @@ class Project {
       'start_date', 'end_date_planned', 'end_date_real', 'description', 'notes',
       'budget_subcontractor', 'budget_materials', 'budget_inhouse',
       'budget_allowance', 'budget_fuel', 'budget_tools', 'budget_others',
+      'project_type',
     ];
     const fields = [];
     const params = [];

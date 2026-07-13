@@ -112,6 +112,7 @@ const schemas = {
     pm_id: Joi.string().uuid().optional(),
     order_number: Joi.string().max(100).optional().allow(''),
     budget_amount: Joi.number().positive().optional(),
+    project_type: Joi.string().valid('ftth','structured_cabling','ftth_homepass','maintenance','support','consulting','swap','other').optional(),
     budget_subcontractor: Joi.number().min(0).optional(),
     budget_materials: Joi.number().min(0).optional(),
     budget_inhouse: Joi.number().min(0).optional(),
