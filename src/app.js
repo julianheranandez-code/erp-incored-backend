@@ -160,6 +160,7 @@ app.use('/api/admin/cleanup', require('./routes/adminCleanup'));
 
 app.use('/api/documents',    require('./routes/documents'));
 app.use('/api/project-documents', require('./routes/project-documents'));
+app.use('/api/project-activities', require('./routes/project-activities'));
 app.use('/api/treasury-v4',  require('./routes/treasury'));
 app.use('/api/financial',    require('./routes/financial'));
 app.use('/api/executive',    require('./routes/executive'));
