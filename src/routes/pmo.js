@@ -703,7 +703,7 @@ module.exports = router;
 // PUT /api/pmo/crews/:id
 router.put('/crews/:id', async (req, res, next) => {
   try {
-    const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes } = req.body;
+    const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes, subcontractor_id } = req.body;
     const result = await query(`
       UPDATE project_crews SET
         crew_name        = COALESCE($1, crew_name),
