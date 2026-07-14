@@ -732,7 +732,7 @@ router.put('/crews/:id', async (req, res, next) => {
 // PATCH /api/pmo/crews/:id (alias for PUT)
 router.patch('/crews/:id', async (req, res, next) => {
   req.method = 'PUT';
-  const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes } = req.body;
+  const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes, subcontractor_id } = req.body;
   try {
     const result = await query(`
       UPDATE project_crews SET
