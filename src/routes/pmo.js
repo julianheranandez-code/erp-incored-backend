@@ -706,18 +706,21 @@ router.put('/crews/:id', async (req, res, next) => {
     const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes } = req.body;
     const result = await query(`
       UPDATE project_crews SET
-        crew_name     = COALESCE($1, crew_name),
-        supervisor_id = $2,
-        crew_size     = COALESCE($3, crew_size),
-        specialty     = COALESCE($4, specialty),
-        status        = COALESCE($5, status),
-        notes         = COALESCE($6, notes),
-        updated_at    = NOW()
-      WHERE id = $7
+        crew_name        = COALESCE($1, crew_name),
+        supervisor_id    = $2,
+        crew_size        = COALESCE($3, crew_size),
+        specialty        = COALESCE($4, specialty),
+        status           = COALESCE($5, status),
+        notes            = COALESCE($6, notes),
+        crew_type        = COALESCE($7, crew_type),
+        subcontractor_id = $8,
+        updated_at       = NOW()
+      WHERE id = $9
       RETURNING *`,
       [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
+       crew_type||null, subcontractor_id?parseInt(subcontractor_id):null,
        parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success:false,
@@ -733,18 +736,21 @@ router.patch('/crews/:id', async (req, res, next) => {
   try {
     const result = await query(`
       UPDATE project_crews SET
-        crew_name     = COALESCE($1, crew_name),
-        supervisor_id = $2,
-        crew_size     = COALESCE($3, crew_size),
-        specialty     = COALESCE($4, specialty),
-        status        = COALESCE($5, status),
-        notes         = COALESCE($6, notes),
-        updated_at    = NOW()
-      WHERE id = $7
+        crew_name        = COALESCE($1, crew_name),
+        supervisor_id    = $2,
+        crew_size        = COALESCE($3, crew_size),
+        specialty        = COALESCE($4, specialty),
+        status           = COALESCE($5, status),
+        notes            = COALESCE($6, notes),
+        crew_type        = COALESCE($7, crew_type),
+        subcontractor_id = $8,
+        updated_at       = NOW()
+      WHERE id = $9
       RETURNING *`,
       [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
+       crew_type||null, subcontractor_id?parseInt(subcontractor_id):null,
        parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success:false, error:'not_found', message:'Crew not found' });
