@@ -707,16 +707,15 @@ router.put('/crews/:id', async (req, res, next) => {
     const result = await query(`
       UPDATE project_crews SET
         crew_name     = COALESCE($1, crew_name),
-        crew_type     = COALESCE($2, crew_type),
-        supervisor_id = $3,
-        crew_size     = COALESCE($4, crew_size),
-        specialty     = COALESCE($5, specialty),
-        status        = COALESCE($6, status),
-        notes         = COALESCE($7, notes),
+        supervisor_id = $2,
+        crew_size     = COALESCE($3, crew_size),
+        specialty     = COALESCE($4, specialty),
+        status        = COALESCE($5, status),
+        notes         = COALESCE($6, notes),
         updated_at    = NOW()
-      WHERE id = $8 AND company_id = $9
+      WHERE id = $7 AND company_id = $8
       RETURNING *`,
-      [crew_name||null, crew_type||null, supervisor_id||null,
+      [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
        parseInt(req.params.id), getAuthorizedCompanyId(req.user, req.query.company_id)]
@@ -735,16 +734,15 @@ router.patch('/crews/:id', async (req, res, next) => {
     const result = await query(`
       UPDATE project_crews SET
         crew_name     = COALESCE($1, crew_name),
-        crew_type     = COALESCE($2, crew_type),
-        supervisor_id = $3,
-        crew_size     = COALESCE($4, crew_size),
-        specialty     = COALESCE($5, specialty),
-        status        = COALESCE($6, status),
-        notes         = COALESCE($7, notes),
+        supervisor_id = $2,
+        crew_size     = COALESCE($3, crew_size),
+        specialty     = COALESCE($4, specialty),
+        status        = COALESCE($5, status),
+        notes         = COALESCE($6, notes),
         updated_at    = NOW()
-      WHERE id = $8 AND company_id = $9
+      WHERE id = $7 AND company_id = $8
       RETURNING *`,
-      [crew_name||null, crew_type||null, supervisor_id||null,
+      [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
        parseInt(req.params.id), getAuthorizedCompanyId(req.user, req.query.company_id)]
