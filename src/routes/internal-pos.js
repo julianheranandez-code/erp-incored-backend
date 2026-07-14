@@ -212,7 +212,8 @@ router.post('/', async (req, res, next) => {
   try {
     const {
       company_id, project_id, vendor_id, vendor_master_id, po_number, category,
-      description, subtotal, tax_percent = 0, notes
+      description, subtotal, tax_percent = 0, notes,
+      payment_terms, retention_pct = 0, discount_pct = 0
     } = req.body;
 
     // Auto-generate PO number if not provided
@@ -250,8 +251,9 @@ router.post('/', async (req, res, next) => {
       INSERT INTO internal_purchase_orders (
         company_id, project_id, vendor_id, vendor_master_id, po_number, category,
         description, subtotal, tax_percent, tax_amount, total_amount,
-        remaining_amount, committed_amount, status, created_by
-      ) VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$10,0,'draft',$11)
+        remaining_amount, committed_amount, status, created_by,
+        payment_terms, retention_pct, retention_amount, discount_pct, discount_amount
+      ) VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$10,0,'draft',$11,$12,$13,$14,$15,$16)
       RETURNING *
     `, [
         parseInt(company_id),
@@ -264,7 +266,12 @@ router.post('/', async (req, res, next) => {
         parseFloat(tax_percent),
         tax_amount,
         total_amount,
-        req.user.id
+        req.user.id,
+        payment_terms||null,
+        parseFloat(retention_pct||0),
+        parseFloat(subtotal) * (parseFloat(retention_pct||0) / 100),
+        parseFloat(discount_pct||0),
+        parseFloat(subtotal) * (parseFloat(discount_pct||0) / 100)
     ]);
 
     writeAudit({
