@@ -713,12 +713,12 @@ router.put('/crews/:id', async (req, res, next) => {
         status        = COALESCE($5, status),
         notes         = COALESCE($6, notes),
         updated_at    = NOW()
-      WHERE id = $7 AND company_id = $8
+      WHERE id = $7
       RETURNING *`,
       [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
-       parseInt(req.params.id), getAuthorizedCompanyId(req.user, req.query.company_id)]
+       parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success:false,
       error:'not_found', message:'Crew not found' });
@@ -740,12 +740,12 @@ router.patch('/crews/:id', async (req, res, next) => {
         status        = COALESCE($5, status),
         notes         = COALESCE($6, notes),
         updated_at    = NOW()
-      WHERE id = $7 AND company_id = $8
+      WHERE id = $7
       RETURNING *`,
       [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
-       parseInt(req.params.id), getAuthorizedCompanyId(req.user, req.query.company_id)]
+       parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success:false, error:'not_found', message:'Crew not found' });
     res.json({ success:true, data:result.rows[0] });
