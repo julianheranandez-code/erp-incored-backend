@@ -480,11 +480,10 @@ router.post('/:id/approve-step', async (req, res, next) => {
       return res.status(400).json({ success:false, error:'invalid_status',
         message:`PO must be pending_approval. Current: ${po.status}` });
 
-    // Find pending step for this user
+    // Find pending step for this user (any level)
     const stepResult = await query(`
       SELECT s.* FROM treasury_approval_steps s
-      JOIN treasury_approval_requests r ON r.id = s.request_id
-      WHERE r.id = $1 AND s.approver_user_id = $2 AND s.status = 'pending'
+      WHERE s.request_id = $1 AND s.approver_user_id = $2 AND s.status = 'pending'
       ORDER BY s.level_number ASC LIMIT 1
     `, [po.approval_request_id, req.user.id]);
 
