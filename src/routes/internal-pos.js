@@ -466,3 +466,73 @@ router.post('/:id/cancel', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// POST /api/internal-pos/:id/approve-step — approve current level in chain
+router.post('/:id/approve-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const poId = parseInt(req.params.id);
+    const access = await getIPOAccess(poId, req.user.id, getEffectiveRoles(req.user));
+    if (access.error) return res.status(404).json({ success:false, error:access.error });
+
+    const po = access.po;
+    if (po.status !== 'pending_approval')
+      return res.status(400).json({ success:false, error:'invalid_status',
+        message:`PO must be pending_approval. Current: ${po.status}` });
+
+    // Find pending step for this user
+    const stepResult = await query(`
+      SELECT s.* FROM treasury_approval_steps s
+      JOIN treasury_approval_requests r ON r.id = s.request_id
+      WHERE r.id = $1 AND s.approver_user_id = $2 AND s.status = 'pending'
+      ORDER BY s.level_number ASC LIMIT 1
+    `, [po.approval_request_id, req.user.id]);
+
+    if (!stepResult.rows[0])
+      return res.status(403).json({ success:false, error:'not_your_turn',
+        message:'No pending approval step found for your user' });
+
+    const step = stepResult.rows[0];
+
+    await withTransaction(async (client) => {
+      // Approve this step
+      await client.query(`
+        UPDATE treasury_approval_steps SET
+          status='approved', approved_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE id=$2
+      `, [comments||null, step.id]);
+
+      // Check if all steps approved
+      const pendingResult = await client.query(`
+        SELECT COUNT(*) as pending FROM treasury_approval_steps
+        WHERE request_id=$1 AND status='pending'
+      `, [po.approval_request_id]);
+
+      const stillPending = parseInt(pendingResult.rows[0].pending);
+
+      if (stillPending === 0) {
+        // All levels approved — approve the PO
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
+          WHERE id=$1`, [po.approval_request_id]);
+        await client.query(`
+          UPDATE internal_purchase_orders SET
+            status='approved', approved_at=NOW(), approved_by=$1,
+            approved_amount=total_amount, remaining_amount=total_amount,
+            updated_at=NOW()
+          WHERE id=$2`, [req.user.id, poId]);
+      } else {
+        // Update current level
+        await client.query(`
+          UPDATE treasury_approval_requests SET
+            current_level=$1, updated_at=NOW()
+          WHERE id=$2`, [step.level_number + 1, po.approval_request_id]);
+      }
+    });
+
+    const updatedPO = await getIPOAccess(poId, req.user.id, getEffectiveRoles(req.user));
+    return res.json({ success:true, data: updatedPO.po,
+      message: stillPending === 0 ? 'PO fully approved!' : `Level ${step.level_number} approved. Waiting for next approver.`
+    });
+  } catch(e) { next(e); }
+});
