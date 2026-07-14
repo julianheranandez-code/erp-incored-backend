@@ -699,3 +699,30 @@ router.get('/alerts', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// PUT /api/pmo/crews/:id
+router.put('/crews/:id', async (req, res, next) => {
+  try {
+    const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes } = req.body;
+    const result = await query(`
+      UPDATE project_crews SET
+        crew_name     = COALESCE($1, crew_name),
+        crew_type     = COALESCE($2, crew_type),
+        supervisor_id = $3,
+        crew_size     = COALESCE($4, crew_size),
+        specialty     = COALESCE($5, specialty),
+        status        = COALESCE($6, status),
+        notes         = COALESCE($7, notes),
+        updated_at    = NOW()
+      WHERE id = $8 AND company_id = $9
+      RETURNING *`,
+      [crew_name||null, crew_type||null, supervisor_id||null,
+       crew_size?parseInt(crew_size):null, specialty||null,
+       status||null, notes||null,
+       parseInt(req.params.id), getAuthorizedCompanyId(req.user, req.query.company_id)]
+    );
+    if (!result.rows[0]) return res.status(404).json({ success:false,
+      error:'not_found', message:'Crew not found' });
+    res.json({ success:true, data:result.rows[0] });
+  } catch(e) { next(e); }
+});
