@@ -59,7 +59,13 @@ async function getIPOAccess(id, userId, roles) {
     WHERE p.id = $1
   `, [parseInt(id)]);
   if (!result.rows[0]) return { error: 'not_found' };
-  return { po: result.rows[0] };
+
+  // Get line items
+  const linesResult = await query(
+    'SELECT * FROM internal_po_line_items WHERE po_id=$1 ORDER BY sort_order ASC, id ASC',
+    [parseInt(id)]
+  );
+  return { po: { ...result.rows[0], line_items: linesResult.rows } };
 }
 
 const VALID_STATUSES = ['draft','pending_approval','approved','partially_consumed',
@@ -273,6 +279,23 @@ router.post('/', async (req, res, next) => {
         parseFloat(discount_pct||0),
         parseFloat(subtotal) * (parseFloat(discount_pct||0) / 100)
     ]);
+
+    // Save line items if provided
+    const line_items = req.body.line_items || [];
+    if (line_items.length > 0) {
+      for (let i = 0; i < line_items.length; i++) {
+        const item = line_items[i];
+        const itemTotal = parseFloat(item.quantity||1) * parseFloat(item.unit_cost||0);
+        await query(`
+          INSERT INTO internal_po_line_items
+            (po_id, description, quantity, unit, unit_cost, total, notes, sort_order)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [result.rows[0].id, item.description||'', parseFloat(item.quantity||1),
+           item.unit||null, parseFloat(item.unit_cost||0), itemTotal,
+           item.notes||null, i]
+        );
+      }
+    }
 
     writeAudit({
       userId: req.user.id, action: 'internal_po_created',
