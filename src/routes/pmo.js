@@ -581,10 +581,12 @@ router.get('/crews', async (req, res, next) => {
     const result = await query(`
       SELECT c.*,
         p.name AS project_name,
-        CONCAT(u.first_name,' ',u.last_name) AS supervisor_name
+        CONCAT(u.first_name,' ',u.last_name) AS supervisor_name,
+        sc.name AS subcontractor_name
       FROM project_crews c
-      LEFT JOIN projects p ON p.id = c.project_id
+      LEFT JOIN projects p  ON p.id = c.project_id
       LEFT JOIN users u    ON u.id = c.supervisor_id
+      LEFT JOIN clients sc ON sc.id = c.subcontractor_id
       ${where}
       ORDER BY c.crew_name ASC
     `, values);
