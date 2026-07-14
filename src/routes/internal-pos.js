@@ -47,9 +47,17 @@ function getEffectiveRoles(user) {
 }
 
 async function getIPOAccess(id, userId, roles) {
-  const result = await query(
-    `SELECT * FROM internal_purchase_orders WHERE id = $1`, [parseInt(id)]
-  );
+  const result = await query(`
+    SELECT p.*,
+      c.name AS vendor_name,
+      pr.name AS project_name, pr.code AS project_code,
+      CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+    FROM internal_purchase_orders p
+    LEFT JOIN clients c   ON c.id = p.vendor_id
+    LEFT JOIN projects pr ON pr.id = p.project_id
+    LEFT JOIN users u     ON u.id = p.created_by
+    WHERE p.id = $1
+  `, [parseInt(id)]);
   if (!result.rows[0]) return { error: 'not_found' };
   return { po: result.rows[0] };
 }
@@ -102,7 +110,7 @@ router.get('/', async (req, res, next) => {
           pr.name AS project_name, pr.code AS project_code,
           CONCAT(u.first_name,' ',u.last_name) AS created_by_name
         FROM internal_purchase_orders p
-        LEFT JOIN vendors v    ON v.id = p.vendor_master_id
+        LEFT JOIN clients v   ON v.id = p.vendor_id
         LEFT JOIN projects pr  ON pr.id = p.project_id
         LEFT JOIN users u      ON u.id = p.created_by
         ${where}
