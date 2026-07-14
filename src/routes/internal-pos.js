@@ -207,10 +207,24 @@ router.post('/', async (req, res, next) => {
       description, subtotal, tax_percent = 0, notes
     } = req.body;
 
+    // Auto-generate PO number if not provided
+    const COMPANY_CODES = { 1:'INC', 2:'ZHA', 3:'INT', 4:'MIK' };
+    let finalPoNumber = po_number;
+    if (!finalPoNumber) {
+      const compCode = COMPANY_CODES[parseInt(company_id)] || 'INC';
+      const now = new Date();
+      const yymm = String(now.getMonth()+1).padStart(2,'0') + String(now.getFullYear()).slice(-2);
+      const countResult = await query(
+        'SELECT COUNT(*) as cnt FROM internal_purchase_orders WHERE company_id=$1',
+        [parseInt(company_id)]
+      );
+      const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
+      finalPoNumber = `PO-${compCode}-${yymm}-${seq}`;
+    }
+
     const missing = [];
     if (!company_id)  missing.push('company_id');
     if (!project_id)  missing.push('project_id');
-    if (!po_number)   missing.push('po_number');
     if (!subtotal)    missing.push('subtotal');
     if (missing.length)
       return res.status(400).json({ success: false, error: 'validation_error',
@@ -236,7 +250,7 @@ router.post('/', async (req, res, next) => {
         parseInt(project_id),
         vendor_id ? parseInt(vendor_id) : null,
         vendor_master_id ? parseInt(vendor_master_id) : null,
-        po_number,
+        finalPoNumber,
         category || null,
         description || null,
         parseFloat(subtotal),
