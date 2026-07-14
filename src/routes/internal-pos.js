@@ -564,3 +564,39 @@ router.post('/:id/approve-step', async (req, res, next) => {
     });
   } catch(e) { next(e); }
 });
+
+// GET /api/internal-pos/:id/ap-bills — AP Bills linked to this PO
+router.get('/:id/ap-bills', async (req, res, next) => {
+  try {
+    const poId = parseInt(req.params.id);
+    const access = await getIPOAccess(poId, req.user.id, getEffectiveRoles(req.user));
+    if (access.error) return res.status(404).json({ success: false, error: access.error });
+
+    const result = await query(`
+      SELECT b.*,
+        v.name AS vendor_name,
+        CONCAT(u.first_name,' ',u.last_name) AS created_by_name
+      FROM ap_bills b
+      LEFT JOIN clients v  ON v.id = b.vendor_id
+      LEFT JOIN users u    ON u.id = b.created_by
+      WHERE b.internal_po_id = $1
+      ORDER BY b.created_at DESC
+    `, [poId]);
+
+    // Calculate billed amount
+    const billed = result.rows.reduce((s, b) => s + parseFloat(b.total_amount||0), 0);
+    const po = access.po;
+
+    return res.json({
+      success: true,
+      data: result.rows,
+      summary: {
+        total_billed:    billed,
+        po_total:        parseFloat(po.total_amount||0),
+        remaining:       parseFloat(po.total_amount||0) - billed,
+        billed_pct:      po.total_amount > 0 ? Math.round((billed/parseFloat(po.total_amount))*100) : 0
+      },
+      metadata: { count: result.rows.length, generated_at: new Date().toISOString() }
+    });
+  } catch(e) { next(e); }
+});
