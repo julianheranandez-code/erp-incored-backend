@@ -249,7 +249,6 @@ router.post('/', async (req, res, next) => {
         parseInt(company_id),
         parseInt(project_id),
         vendor_id ? parseInt(vendor_id) : null,
-        vendor_master_id ? parseInt(vendor_master_id) : null,
         finalPoNumber,
         category || null,
         description || null,
