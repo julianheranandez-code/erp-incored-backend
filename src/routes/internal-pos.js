@@ -494,6 +494,7 @@ router.post('/:id/approve-step', async (req, res, next) => {
 
     const step = stepResult.rows[0];
 
+    let stillPending = 1;
     await withTransaction(async (client) => {
       // Approve this step
       await client.query(`
@@ -508,10 +509,9 @@ router.post('/:id/approve-step', async (req, res, next) => {
         WHERE request_id=$1 AND status='pending'
       `, [po.approval_request_id]);
 
-      const stillPending = parseInt(pendingResult.rows[0].pending);
+      stillPending = parseInt(pendingResult.rows[0].pending);
 
       if (stillPending === 0) {
-        // All levels approved — approve the PO
         await client.query(`
           UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
           WHERE id=$1`, [po.approval_request_id]);
@@ -522,7 +522,6 @@ router.post('/:id/approve-step', async (req, res, next) => {
             updated_at=NOW()
           WHERE id=$2`, [req.user.id, poId]);
       } else {
-        // Update current level
         await client.query(`
           UPDATE treasury_approval_requests SET
             current_level=$1, updated_at=NOW()
