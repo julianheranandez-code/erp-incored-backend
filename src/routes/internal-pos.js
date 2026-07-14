@@ -243,7 +243,7 @@ router.post('/', async (req, res, next) => {
         company_id, project_id, vendor_id, vendor_master_id, po_number, category,
         description, subtotal, tax_percent, tax_amount, total_amount,
         remaining_amount, committed_amount, status, created_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11,0,'draft',$12)
+      ) VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$10,0,'draft',$11)
       RETURNING *
     `, [
         parseInt(company_id),
