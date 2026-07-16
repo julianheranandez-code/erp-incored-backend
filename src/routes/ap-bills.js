@@ -151,6 +151,21 @@ router.post('/', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: company_id, project_id, subtotal, due_date' });
 
+    // Auto-generate folio if not provided
+    const COMPANY_CODES = { 1:'INC', 2:'ZHA', 3:'INT', 4:'MIK' };
+    let finalFolio = folio;
+    if (!finalFolio) {
+      const compCode = COMPANY_CODES[parseInt(company_id)] || 'INC';
+      const now = new Date();
+      const yymm = String(now.getMonth()+1).padStart(2,'0') + String(now.getFullYear()).slice(-2);
+      const countResult = await query(
+        'SELECT COUNT(*) as cnt FROM ap_bills WHERE company_id=$1',
+        [parseInt(company_id)]
+      );
+      const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
+      finalFolio = `BILL-${compCode}-${yymm}-${seq}`;
+    }
+
     // FIX 1: vendor_master_id mandatory for all new AP Bills
     // Historical records with vendor_id only remain unaffected
     if (!vendor_master_id)
@@ -199,7 +214,7 @@ router.post('/', async (req, res, next) => {
           vendor_master_id ? parseInt(vendor_master_id) : null,
           internal_po_id ? parseInt(internal_po_id) : null,
           client_po_id ? parseInt(client_po_id) : null,
-          vendor_invoice_no || null, folio || null,
+          vendor_invoice_no || null, finalFolio || null,
           description || null, notes || null,
           parseFloat(subtotal), parseFloat(tax_percent), tax_amount,
           total_amount, currency, parseFloat(exchange_rate),
