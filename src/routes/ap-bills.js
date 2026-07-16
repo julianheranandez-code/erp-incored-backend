@@ -504,3 +504,128 @@ router.get('/project/:projectId/budget', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// POST /api/ap-bills/:id/upload-attachment
+const multer = require('multer');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+
+const apBillUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      'application/pdf',
+      'text/xml',
+      'application/xml',
+      'application/xhtml+xml'
+    ];
+    if (allowed.includes(file.mimetype) || /\.(xml|pdf)$/i.test(file.originalname)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF and XML files allowed'));
+    }
+  }
+});
+
+router.post('/:id/upload-attachment', apBillUpload.single('file'), async (req, res, next) => {
+  try {
+    const billId = parseInt(req.params.id);
+    if (!req.file) return res.status(400).json({ success: false,
+      error: { code: 'NO_FILE', message: 'No file provided' } });
+
+    // Verify bill exists
+    const billResult = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    if (!billResult.rows[0]) return res.status(404).json({ success: false,
+      error: { code: 'NOT_FOUND', message: 'AP Bill not found' } });
+
+    const bill = billResult.rows[0];
+    const isSensitive = req.body.is_sensitive === 'true';
+    const comments = req.body.comments || null;
+    const fileType = req.file.originalname.toLowerCase().endsWith('.xml') ? 'xml' : 'pdf';
+
+    // Upload to S3
+    const s3 = new S3Client({
+      region: process.env.AWS_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+      }
+    });
+
+    const safeName = req.file.originalname.replace(/[^a-zA-Z0-9.-]/g, '-');
+    const key = `documents/ap-bills/${billId}/${fileType}/${new Date().toISOString().slice(0,10)}-${safeName}-${Date.now()}`;
+    const bucket = process.env.AWS_S3_BUCKET || 'incored-erp-files';
+
+    await s3.send(new PutObjectCommand({
+      Bucket: bucket, Key: key,
+      Body: req.file.buffer, ContentType: req.file.mimetype,
+      Metadata: {
+        bill_id: String(billId),
+        file_type: fileType,
+        uploaded_by: String(req.user.id),
+        is_sensitive: String(isSensitive)
+      }
+    }));
+
+    // Update bill with attachment info
+    const updateField = fileType === 'xml' ? 'cfdi_xml_url' : 'attachment_url';
+    await query(`
+      UPDATE ap_bills SET
+        ${updateField} = $1,
+        attachment_is_sensitive = $2,
+        attachment_comments = $3,
+        attachment_uploaded_at = NOW(),
+        attachment_file_size = $4,
+        attachment_original_name = $5,
+        updated_at = NOW()
+      WHERE id = $6
+    `, [key, isSensitive, comments, req.file.size, req.file.originalname, billId]);
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        key, bucket, file_type: fileType,
+        original_name: req.file.originalname,
+        file_size: req.file.size,
+        is_sensitive: isSensitive,
+        comments,
+        uploaded_at: new Date().toISOString(),
+        download_url: `/api/ap-bills/${billId}/attachment`
+      },
+      metadata: { generated_at: new Date().toISOString() }
+    });
+  } catch(e) { next(e); }
+});
+
+// GET /api/ap-bills/:id/attachment — presigned download URL
+router.get('/:id/attachment', async (req, res, next) => {
+  try {
+    const billId = parseInt(req.params.id);
+    const { type = 'pdf' } = req.query;
+    const billResult = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    if (!billResult.rows[0]) return res.status(404).json({ success: false,
+      error: { code: 'NOT_FOUND', message: 'AP Bill not found' } });
+
+    const bill = billResult.rows[0];
+    const key = type === 'xml' ? bill.cfdi_xml_url : bill.attachment_url;
+    if (!key) return res.status(404).json({ success: false,
+      error: { code: 'NO_ATTACHMENT', message: 'No attachment found' } });
+
+    const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+    const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+    const s3 = new S3Client({
+      region: process.env.AWS_REGION || 'us-east-1',
+      credentials: { accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY }
+    });
+    const url = await getSignedUrl(s3,
+      new GetObjectCommand({ Bucket: process.env.AWS_S3_BUCKET || 'incored-erp-files', Key: key }),
+      { expiresIn: 3600 }
+    );
+    return res.json({ success: true,
+      data: { url, expires_in: 3600, filename: bill.attachment_original_name,
+        file_size: bill.attachment_file_size, is_sensitive: bill.attachment_is_sensitive,
+        comments: bill.attachment_comments, uploaded_at: bill.attachment_uploaded_at }
+    });
+  } catch(e) { next(e); }
+});
