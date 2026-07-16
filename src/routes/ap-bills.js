@@ -191,6 +191,13 @@ router.post('/', async (req, res, next) => {
         return res.status(400).json({ success: false, error: 'po_not_approved',
           message: `Internal PO must be approved. Current status: ${po.status}` });
 
+      // Validate remaining amount
+      const remaining = parseFloat(po.remaining_amount || po.total_amount || 0);
+      if (total_amount > remaining)
+        return res.status(400).json({ success: false, error: 'insufficient_po_balance',
+          message: `La factura ($${total_amount.toLocaleString()}) excede el saldo disponible de la Internal PO ($${remaining.toLocaleString()}). La factura no puede ser procesada.`,
+          data: { bill_amount: total_amount, po_remaining: remaining, po_total: po.total_amount } });
+
       if (parseFloat(po.remaining_amount) < total_amount)
         return res.status(400).json({ success: false, error: 'po_balance_exceeded',
           message: `Bill total (${total_amount}) exceeds PO remaining balance (${po.remaining_amount}).`,
