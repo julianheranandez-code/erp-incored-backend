@@ -638,3 +638,141 @@ router.get('/:id/attachment', async (req, res, next) => {
     });
   } catch(e) { next(e); }
 });
+
+// POST /api/ap-bills/:id/approve-step — approve current level in chain
+router.post('/:id/approve-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const billId = parseInt(req.params.id);
+    const billResult = await query(`
+      SELECT b.*, c.name AS vendor_name, p.name AS project_name
+      FROM ap_bills b
+      LEFT JOIN clients c ON c.id = b.vendor_id
+      LEFT JOIN projects p ON p.id = b.project_id
+      WHERE b.id = $1`, [billId]);
+    if (!billResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const bill = billResult.rows[0];
+    if (bill.status !== 'pending_approval')
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `Bill must be pending_approval. Current: ${bill.status}` });
+
+    const stepResult = await query(`
+      SELECT s.* FROM treasury_approval_steps s
+      WHERE s.request_id = $1 AND s.approver_user_id = $2 AND s.status = 'pending'
+      ORDER BY s.level_number ASC LIMIT 1
+    `, [bill.approval_request_id, req.user.id]);
+
+    if (!stepResult.rows[0])
+      return res.status(403).json({ success: false, error: 'not_your_turn',
+        message: 'No pending approval step found for your user' });
+
+    const step = stepResult.rows[0];
+    let stillPending = 1;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_steps SET
+          status='approved', approved_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE id=$2`, [comments||null, step.id]);
+
+      const pendingResult = await client.query(`
+        SELECT COUNT(*) as pending FROM treasury_approval_steps
+        WHERE request_id=$1 AND status='pending'
+      `, [bill.approval_request_id]);
+
+      stillPending = parseInt(pendingResult.rows[0].pending);
+
+      if (stillPending === 0) {
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
+          WHERE id=$1`, [bill.approval_request_id]);
+        await client.query(`
+          UPDATE ap_bills SET
+            status='approved', approved_at=NOW(), approved_by=$1,
+            updated_at=NOW()
+          WHERE id=$2`, [req.user.id, billId]);
+      } else {
+        await client.query(`
+          UPDATE treasury_approval_requests SET
+            current_level=$1, updated_at=NOW()
+          WHERE id=$2`, [step.level_number + 1, bill.approval_request_id]);
+      }
+    });
+
+    const updated = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    return res.json({ success: true, data: updated.rows[0],
+      message: stillPending === 0 ? 'AP Bill fully approved!' : `Level ${step.level_number} approved. Waiting for next approver.`
+    });
+  } catch(e) { next(e); }
+});
+
+// POST /api/ap-bills/:id/reject-step
+router.post('/:id/reject-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const billId = parseInt(req.params.id);
+    const billResult = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    if (!billResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const bill = billResult.rows[0];
+    if (bill.status !== 'pending_approval')
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `Bill must be pending_approval. Current: ${bill.status}` });
+
+    await withTransaction(async (client) => {
+      if (bill.approval_request_id) {
+        await client.query(`
+          UPDATE treasury_approval_steps SET status='rejected', 
+            approved_at=NOW(), comments=$1, updated_at=NOW()
+          WHERE request_id=$2 AND approver_user_id=$3 AND status='pending'`,
+          [comments||null, bill.approval_request_id, req.user.id]);
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='rejected', updated_at=NOW()
+          WHERE id=$1`, [bill.approval_request_id]);
+      }
+      await client.query(`
+        UPDATE ap_bills SET status='rejected', rejected_by=$1,
+          rejected_at=NOW(), rejection_reason=$2, updated_at=NOW()
+        WHERE id=$3`, [req.user.id, comments||null, billId]);
+    });
+
+    const updated = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    return res.json({ success: true, data: updated.rows[0], message: 'AP Bill rejected' });
+  } catch(e) { next(e); }
+});
+
+// GET /api/ap-bills/:id/approval-status
+router.get('/:id/approval-status', async (req, res, next) => {
+  try {
+    const billId = parseInt(req.params.id);
+    const billResult = await query('SELECT * FROM ap_bills WHERE id=$1', [billId]);
+    if (!billResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const bill = billResult.rows[0];
+    if (!bill.approval_request_id)
+      return res.json({ success: true, data: { status: bill.status, approval_request_id: null, steps: [] } });
+
+    const requestResult = await query(
+      'SELECT * FROM treasury_approval_requests WHERE id=$1', [bill.approval_request_id]);
+    const stepsResult = await query(`
+      SELECT s.*, CONCAT(u.first_name,' ',u.last_name) AS approver
+      FROM treasury_approval_steps s
+      LEFT JOIN users u ON u.id = s.approver_user_id
+      WHERE s.request_id=$1 ORDER BY s.level_number ASC
+    `, [bill.approval_request_id]);
+
+    return res.json({ success: true, data: {
+      bill_status: bill.status,
+      approval_request_id: bill.approval_request_id,
+      approval_status: requestResult.rows[0]?.status,
+      current_level: requestResult.rows[0]?.current_level,
+      final_level: requestResult.rows[0]?.final_level,
+      steps: stepsResult.rows.map(s => ({
+        level: s.level_number, role: s.approver_role,
+        approver: s.approver, status: s.status,
+        approved_at: s.approved_at, comments: s.comments
+      }))
+    }});
+  } catch(e) { next(e); }
+});
