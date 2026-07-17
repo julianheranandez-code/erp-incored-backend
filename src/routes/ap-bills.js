@@ -621,23 +621,6 @@ router.get('/:id/attachment', async (req, res, next) => {
       error: { code: 'NO_ATTACHMENT', message: 'No attachment found' } });
 
     const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const apBillUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = [
-      'application/pdf',
-      'text/xml',
-      'application/xml',
-      'application/xhtml+xml'
-    ];
-    if (allowed.includes(file.mimetype) || /\.(xml|pdf)$/i.test(file.originalname)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only PDF and XML files allowed'));
-    }
-  }
-});
     const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
     const s3 = new S3Client({
       region: process.env.AWS_REGION || 'us-east-1',
