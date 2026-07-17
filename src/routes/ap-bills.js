@@ -218,7 +218,7 @@ router.post('/', async (req, res, next) => {
         RETURNING *
       `, [parseInt(company_id), parseInt(project_id),
           vendor_id ? parseInt(vendor_id) : null,
-          vendor_master_id ? parseInt(vendor_master_id) : null,
+          null,
           internal_po_id ? parseInt(internal_po_id) : null,
           client_po_id ? parseInt(client_po_id) : null,
           vendor_invoice_no || null, finalFolio || null,
