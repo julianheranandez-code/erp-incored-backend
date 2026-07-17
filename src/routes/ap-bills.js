@@ -18,6 +18,8 @@ const { onAPPaymentRecorded, onAPBillCancelled } = require('../services/financia
 const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../config/database');
+const multer = require('multer');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { verifyToken } = require('../middleware/auth');
 const { writeAudit } = require('../middleware/audit');
 const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy } = require('../lib/approval-engine');
@@ -513,8 +515,6 @@ router.get('/project/:projectId/budget', async (req, res, next) => {
 module.exports = router;
 
 // POST /api/ap-bills/:id/upload-attachment
-const multer = require('multer');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 
 const apBillUpload = multer({
   storage: multer.memoryStorage(),
