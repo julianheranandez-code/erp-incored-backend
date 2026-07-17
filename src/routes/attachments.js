@@ -403,7 +403,8 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       });
     }
 
-    const { document_category, expiration_date, notes: docNotes, is_sensitive } = req.body;
+    const { expiration_date, notes: docNotes, is_sensitive } = req.body;
+    const document_category = req.body.document_category || req.body.doc_type || 'other';
     const isSensitive = is_sensitive === 'true' || is_sensitive === true ||
       SENSITIVE_DOC_TYPES.includes((document_category || '').toUpperCase());
     const savedAttachments = [];
