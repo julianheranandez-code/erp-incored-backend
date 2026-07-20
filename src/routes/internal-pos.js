@@ -521,6 +521,11 @@ router.post('/:id/approve-step', async (req, res, next) => {
       return res.status(403).json({ success:false, error:'not_your_turn',
         message:'No pending approval step found for your user' });
 
+    // Segregation of duties: creator cannot approve their own request
+    if (po.created_by === req.user.id)
+      return res.status(403).json({ success:false, error:'segregation_of_duties',
+        message:'No puedes aprobar una solicitud que tu mismo creaste.' });
+
     const step = stepResult.rows[0];
 
     let stillPending = 1;
