@@ -452,3 +452,103 @@ router.post('/:id/cancel', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// POST /api/expenses/:id/approve-step — approve current level in chain
+router.post('/:id/approve-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const expId = parseInt(req.params.id);
+    const expResult = await query('SELECT * FROM expenses WHERE id=$1', [expId]);
+    if (!expResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const exp = expResult.rows[0];
+    if (exp.status !== 'pending_approval')
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `Expense must be pending_approval. Current: ${exp.status}` });
+
+    // Segregation of duties: creator cannot approve their own request
+    if (exp.created_by === req.user.id)
+      return res.status(403).json({ success: false, error: 'segregation_of_duties',
+        message: 'No puedes aprobar un gasto que tu mismo creaste.' });
+
+    const stepResult = await query(`
+      SELECT s.* FROM treasury_approval_steps s
+      WHERE s.request_id = $1 AND s.approver_user_id = $2 AND s.status = 'pending'
+      ORDER BY s.level_number ASC LIMIT 1
+    `, [exp.approval_request_id, req.user.id]);
+
+    if (!stepResult.rows[0])
+      return res.status(403).json({ success: false, error: 'not_your_turn',
+        message: 'No pending approval step found for your user' });
+
+    const step = stepResult.rows[0];
+    let stillPending = 1;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_steps SET
+          status='approved', approved_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE id=$2`, [comments||null, step.id]);
+
+      const pendingResult = await client.query(`
+        SELECT COUNT(*) as pending FROM treasury_approval_steps
+        WHERE request_id=$1 AND status='pending'
+      `, [exp.approval_request_id]);
+
+      stillPending = parseInt(pendingResult.rows[0].pending);
+
+      if (stillPending === 0) {
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
+          WHERE id=$1`, [exp.approval_request_id]);
+        await client.query(`
+          UPDATE expenses SET status='approved', updated_at=NOW()
+          WHERE id=$1`, [expId]);
+      } else {
+        await client.query(`
+          UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW()
+          WHERE id=$2`, [step.level_number + 1, exp.approval_request_id]);
+      }
+    });
+
+    const updated = await query('SELECT * FROM expenses WHERE id=$1', [expId]);
+    return res.json({ success: true, data: updated.rows[0],
+      message: stillPending === 0 ? 'Expense fully approved!' : `Level ${step.level_number} approved.`
+    });
+  } catch(e) { next(e); }
+});
+
+// GET /api/expenses/:id/approval-status
+router.get('/:id/approval-status', async (req, res, next) => {
+  try {
+    const expId = parseInt(req.params.id);
+    const expResult = await query('SELECT * FROM expenses WHERE id=$1', [expId]);
+    if (!expResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const exp = expResult.rows[0];
+    if (!exp.approval_request_id)
+      return res.json({ success: true, data: { status: exp.status, steps: [] } });
+
+    const requestResult = await query(
+      'SELECT * FROM treasury_approval_requests WHERE id=$1', [exp.approval_request_id]);
+    const stepsResult = await query(`
+      SELECT s.*, CONCAT(u.first_name,' ',u.last_name) AS approver
+      FROM treasury_approval_steps s
+      LEFT JOIN users u ON u.id = s.approver_user_id
+      WHERE s.request_id=$1 ORDER BY s.level_number ASC
+    `, [exp.approval_request_id]);
+
+    return res.json({ success: true, data: {
+      expense_status: exp.status,
+      approval_request_id: exp.approval_request_id,
+      approval_status: requestResult.rows[0]?.status,
+      current_level: requestResult.rows[0]?.current_level,
+      final_level: requestResult.rows[0]?.final_level,
+      steps: stepsResult.rows.map(s => ({
+        level: s.level_number, role: s.approver_role,
+        approver: s.approver, status: s.status,
+        approved_at: s.approved_at, comments: s.comments
+      }))
+    }});
+  } catch(e) { next(e); }
+});
