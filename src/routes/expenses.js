@@ -102,9 +102,12 @@ router.get('/', async (req, res, next) => {
         SELECT e.*,
           CONCAT(u.first_name,' ',u.last_name) AS employee_name,
           p.name AS project_name,
-          tc.name AS category_name, tc.category_type
+          tc.name AS category_name, tc.category_type,
+          ipo.po_number AS internal_po_number,
+          ipo.remaining_amount AS po_remaining_amount
         FROM expenses e
         LEFT JOIN users u ON u.id = e.created_by
+        LEFT JOIN internal_purchase_orders ipo ON ipo.id = e.internal_po_id
         LEFT JOIN projects p ON p.id = e.project_id
         LEFT JOIN treasury_transaction_categories tc ON tc.id = e.category_id
         ${where}
@@ -132,7 +135,9 @@ router.get('/', async (req, res, next) => {
 router.get('/:id', async (req, res, next) => {
   try {
     const result = await query(`
-      SELECT e.*,
+            SELECT e.*,
+        ipo.po_number AS internal_po_number,
+        ipo.remaining_amount AS po_remaining_amount,
         CONCAT(u.first_name,' ',u.last_name) AS employee_name,
         p.name AS project_name, p.code AS project_code,
         tc.name AS category_name, tc.category_type
@@ -163,7 +168,7 @@ router.post('/', async (req, res, next) => {
       company_id, project_id, employee_id, category_id,
       description, amount, tax_amount = 0, currency = 'MXN',
       exchange_rate = 1, expense_date, reimbursable = true,
-      attachment_url, receipt_url, cfdi_uuid, notes,
+      attachment_url, receipt, internal_po_id_url, cfdi_uuid, notes,
       expense_type = 'REIMBURSEMENT', priority = 'MEDIUM'
     } = req.body;
 
