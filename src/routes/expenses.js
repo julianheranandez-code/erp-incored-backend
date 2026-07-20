@@ -168,7 +168,7 @@ router.post('/', async (req, res, next) => {
       company_id, project_id, employee_id, category_id,
       description, amount, tax_amount = 0, currency = 'MXN',
       exchange_rate = 1, expense_date, reimbursable = true,
-      attachment_url, receipt, internal_po_id_url, cfdi_uuid, notes,
+      attachment_url, receipt, internal_po_id, cfdi_uuid, notes,
       expense_type = 'REIMBURSEMENT', priority = 'MEDIUM'
     } = req.body;
 
@@ -177,6 +177,25 @@ router.post('/', async (req, res, next) => {
         message: 'Required: company_id, category_id, description, amount, expense_date' });
 
     if (!await assertCompanyAccess(req, res, company_id)) return;
+
+    // Validate Internal PO balance if provided
+    if (internal_po_id) {
+      const poCheck = await query(
+        'SELECT id, status, remaining_amount, total_amount FROM internal_purchase_orders WHERE id=$1 AND company_id=$2',
+        [parseInt(internal_po_id), parseInt(company_id)]
+      );
+      if (!poCheck.rows[0])
+        return res.status(400).json({ success: false, error: 'invalid_internal_po',
+          message: 'Internal PO not found.' });
+      const po = poCheck.rows[0];
+      if (!['approved','partially_consumed'].includes(po.status))
+        return res.status(400).json({ success: false, error: 'po_not_approved',
+          message: 'Internal PO must be approved.' });
+      const remaining = parseFloat(po.remaining_amount || po.total_amount || 0);
+      if (parseFloat(amount) > remaining)
+        return res.status(400).json({ success: false, error: 'insufficient_po_balance',
+          message: 'El gasto excede el saldo disponible de la Internal PO.' });
+    }
 
     if (expense_type && !VALID_EXPENSE_TYPES.includes(expense_type))
       return res.status(400).json({ success: false, error: 'invalid_expense_type',
