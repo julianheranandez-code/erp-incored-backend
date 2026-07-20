@@ -221,24 +221,24 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
         { level: 2, role: 'executive_approver' }
       ];
 
-    // EXPENSE (Sprint 3B)
+    // EXPENSE (Sprint 3B) — updated chain per Incored policy
     case 'EXPENSE':
       if (amt <= T.EXPENSE.LEVEL_1_MAX) return [
-        { level: 1, role: 'supervisor' }
+        { level: 1, role: 'operations_manager' }
       ];
       if (amt <= T.EXPENSE.LEVEL_2_MAX) return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' }
+        { level: 1, role: 'operations_manager' },
+        { level: 2, role: 'accounting_manager' }
       ];
       if (amt <= T.EXPENSE.LEVEL_3_MAX) return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' },
-        { level: 3, role: 'accounting_manager' }
+        { level: 1, role: 'operations_manager' },
+        { level: 2, role: 'accounting_manager' },
+        { level: 3, role: 'finance' }
       ];
       return [
-        { level: 1, role: 'supervisor' },
-        { level: 2, role: 'operations_manager' },
-        { level: 3, role: 'accounting_manager' },
+        { level: 1, role: 'operations_manager' },
+        { level: 2, role: 'accounting_manager' },
+        { level: 3, role: 'finance' },
         { level: 4, role: 'executive_approver' }
       ];
 
