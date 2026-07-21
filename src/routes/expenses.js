@@ -599,3 +599,22 @@ router.get('/test-db', async (req, res) => {
     res.json({ success: false, error: e.message });
   }
 });
+
+// GET /api/expenses/dbtest — test INSERT to document_attachments
+router.get('/dbtest', verifyToken, async (req, res) => {
+  try {
+    const result = await query(`
+      INSERT INTO document_attachments 
+        (company_id, document_type, document_id, original_filename, 
+         stored_filename, mime_type, file_size, storage_path, 
+         storage_adapter, checksum, uploaded_by)
+      VALUES (1, 'expense', 17, 'test.pdf', 'test-stored.pdf', 
+              'application/pdf', 1000, 'test/path', 's3', 
+              'abc123', $1)
+      RETURNING id
+    `, [req.user.id]);
+    res.json({ success: true, id: result.rows[0].id });
+  } catch(e) {
+    res.json({ success: false, error: e.message, code: e.code });
+  }
+});
