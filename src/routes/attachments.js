@@ -400,6 +400,7 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
       });
     }
 
+    logger.info('[POST before assertDocumentAccess] documentType:', documentType, '| id:', id);
     const access = await assertDocumentAccess(documentType, parseInt(id), req.user);
     if (access.error) {
       return res.status(access.error === 'not_found' ? 404 : 403).json({
