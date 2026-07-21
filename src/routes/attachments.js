@@ -106,7 +106,7 @@ const ALLOWED_MIME_TYPES = [
 const DOCUMENT_TYPE_MAP = {
   'ar-invoices':   'ar_invoice',
   'ap-bills':      'ap_bill',
-  'expenses':      'expense_report',
+  'expenses':      'expense',
   'internal-pos':  'internal_po',
   'projects':      'project',
   'materials':     'material',
