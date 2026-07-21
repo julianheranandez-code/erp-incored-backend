@@ -209,15 +209,16 @@ router.post('/', async (req, res, next) => {
         company_id, project_id, employee_id, category_id, description,
         amount, tax_amount, currency, exchange_rate, expense_date,
         reimbursable, attachment_url, receipt_url, cfdi_uuid, notes,
-        expense_type, priority, status, created_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18)
+        expense_type, priority, status, created_by, internal_po_id
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18,$19)
       RETURNING *
     `, [parseInt(company_id), project_id ? parseInt(project_id) : null,
         employee_id ? parseInt(employee_id) : null,
         category_id ? parseInt(category_id) : null, description, parseFloat(amount), parseFloat(tax_amount),
         currency, parseFloat(exchange_rate), expense_date,
         reimbursable, attachment_url||null, receipt_url||null,
-        cfdi_uuid||null, notes||null, expense_type, priority, req.user.id]);
+        cfdi_uuid||null, notes||null, expense_type, priority, req.user.id,
+        internal_po_id ? parseInt(internal_po_id) : null]);
 
     writeAudit({
       userId: req.user.id, action: 'expense_created',
