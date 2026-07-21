@@ -143,6 +143,7 @@ router.get('/:id', async (req, res, next) => {
         tc.name AS category_name, tc.category_type
       FROM expenses e
       LEFT JOIN users u ON u.id = e.created_by
+      LEFT JOIN internal_purchase_orders ipo ON ipo.id = e.internal_po_id
       LEFT JOIN projects p ON p.id = e.project_id
       LEFT JOIN treasury_transaction_categories tc ON tc.id = e.category_id
       WHERE e.id = $1
