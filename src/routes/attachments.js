@@ -474,7 +474,8 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
         logger.info(`[Attachments] Saved: ${file.originalname} (${file.size} bytes)`);
       } catch (fileErr) {
         // Don't fail entire request if one file fails
-        logger.error(`[Attachments] Failed to save ${file.originalname}:`, fileErr.message);
+        logger.error(`[Attachments] Failed to save ${file.originalname}:`, fileErr.message, fileErr.stack);
+        logger.error('[Attachments] INSERT error detail:', { code: fileErr.code, detail: fileErr.detail, constraint: fileErr.constraint });
       }
     }
 
