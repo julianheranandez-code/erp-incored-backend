@@ -166,6 +166,11 @@ app.use('/api/financial',    require('./routes/financial'));
 app.use('/api/executive',    require('./routes/executive'));
 app.use('/api/portfolio',    require('./routes/portfolio'));
 app.use('/api', attachmentsRoutes);
+app.use('/api/ap-bills', attachmentsRoutes);
+app.use('/api/expenses', attachmentsRoutes);
+app.use('/api/internal-pos', attachmentsRoutes);
+app.use('/api/projects', attachmentsRoutes);
+app.use('/api/ar-invoices', attachmentsRoutes);
 
 // CRM leads attachments alias
 app.use('/api/crm', attachmentsRoutes);
