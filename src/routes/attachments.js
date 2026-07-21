@@ -222,7 +222,6 @@ async function assertDocumentAccess(documentType, documentId, user) {
   const tableMap = {
     ar_invoice:    { table: 'ar_invoices', col: 'company_id' },
     ap_bill:       { table: 'ap_bills',    col: 'company_id' },
-    expense_report:{ table: 'expense_reports', col: 'company_id' },
     expense:       { table: 'expenses',                 col: 'company_id' },
     internal_po:   { table: 'internal_purchase_orders', col: 'company_id' },
     project:       { table: 'projects',    col: 'company_id' },
