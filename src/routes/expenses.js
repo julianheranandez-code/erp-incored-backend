@@ -178,6 +178,17 @@ router.post('/', async (req, res, next) => {
 
     if (!await assertCompanyAccess(req, res, company_id)) return;
 
+    // Auto-generate folio
+    const COMPANY_CODES = { 1:'INC', 2:'ZHA', 3:'INT', 4:'MIK' };
+    const compCode = COMPANY_CODES[parseInt(company_id)] || 'INC';
+    const nowDate = new Date();
+    const yymm = String(nowDate.getMonth()+1).padStart(2,'0') + String(nowDate.getFullYear()).slice(-2);
+    const countResult = await query(
+      'SELECT COUNT(*) as cnt FROM expenses WHERE company_id=$1', [parseInt(company_id)]
+    );
+    const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
+    const autoFolio = `EXP-${compCode}-${yymm}-${seq}`;
+
     // Validate Internal PO balance if provided
     if (internal_po_id) {
       const poCheck = await query(
@@ -209,8 +220,8 @@ router.post('/', async (req, res, next) => {
         company_id, project_id, employee_id, category_id, description,
         amount, tax_amount, currency, exchange_rate, expense_date,
         reimbursable, attachment_url, receipt_url, cfdi_uuid, notes,
-        expense_type, priority, status, created_by, internal_po_id
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18,$19)
+        expense_type, priority, status, created_by, internal_po_id, folio
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18,$19,$20)
       RETURNING *
     `, [parseInt(company_id), project_id ? parseInt(project_id) : null,
         employee_id ? parseInt(employee_id) : null,
@@ -218,7 +229,7 @@ router.post('/', async (req, res, next) => {
         currency, parseFloat(exchange_rate), expense_date,
         reimbursable, attachment_url||null, receipt_url||null,
         cfdi_uuid||null, notes||null, expense_type, priority, req.user.id,
-        internal_po_id ? parseInt(internal_po_id) : null]);
+        internal_po_id ? parseInt(internal_po_id) : null, autoFolio]);
 
     writeAudit({
       userId: req.user.id, action: 'expense_created',
