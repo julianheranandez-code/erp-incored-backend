@@ -168,7 +168,7 @@ router.post('/', async (req, res, next) => {
       company_id, project_id, employee_id, category_id,
       description, amount, tax_amount = 0, currency = 'MXN',
       exchange_rate = 1, expense_date, reimbursable = true,
-      attachment_url, receipt, internal_po_id, cfdi_uuid, notes,
+      attachment_url, receipt_url, receipt, internal_po_id, cfdi_uuid, notes,
       expense_type = 'REIMBURSEMENT', priority = 'MEDIUM'
     } = req.body;
 
