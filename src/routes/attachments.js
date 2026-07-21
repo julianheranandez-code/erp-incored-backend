@@ -197,6 +197,7 @@ function resolveCompanyId(user) {
 
 async function assertDocumentAccess(documentType, documentId, user) {
   const resolvedCompanyId = resolveCompanyId(user);
+  logger.info('[assertDocumentAccess] documentType:', documentType, '| documentId:', documentId, '| resolvedCompanyId:', resolvedCompanyId);
 
   // PATCH 1: Employee access — multi-company isolation
   if (documentType === 'employee') {
