@@ -589,3 +589,13 @@ router.get('/:id/approval-status', async (req, res, next) => {
     }});
   } catch(e) { next(e); }
 });
+
+// GET /api/expenses/test-db — test document_attachments table
+router.get('/test-db', async (req, res) => {
+  try {
+    const result = await query('SELECT COUNT(*) as cnt FROM document_attachments');
+    res.json({ success: true, count: result.rows[0].cnt });
+  } catch(e) {
+    res.json({ success: false, error: e.message });
+  }
+});
