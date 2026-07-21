@@ -4,7 +4,7 @@ const path = require('path');
 const fs   = require('fs');
 const { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 
-const BUCKET   = process.env.AWS_S3_BUCKET  || 'incored-erp-uploads';
+const BUCKET   = process.env.AWS_S3_BUCKET  || 'incored-erp-files';
 const REGION   = process.env.AWS_REGION     || 'us-east-2';
 const S3_URL   = `https://${BUCKET}.s3.${REGION}.amazonaws.com`;
 const BASE_URL = process.env.API_URL || 'https://incored-api.onrender.com';
