@@ -257,6 +257,7 @@ async function assertDocumentAccess(documentType, documentId, user) {
 router.get('/:kind/:id/attachments', async (req, res, next) => {
   try {
     const { kind, id } = req.params;
+    logger.info('[ATTACHMENTS] kind received:', kind, '| documentType:', getDocumentType(kind));
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
@@ -373,6 +374,7 @@ router.post('/:kind/:id/attachments', upload.any(), async (req, res, next) => {
 
   try {
     const { kind, id } = req.params;
+    logger.info('[ATTACHMENTS] kind received:', kind, '| documentType:', getDocumentType(kind));
     const documentType = getDocumentType(kind);
     if (!documentType) return res.status(400).json({ success: false, error: 'invalid_kind', message: `Invalid document kind: ${kind}` });
 
