@@ -308,8 +308,13 @@ router.post('/:id/submit', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'invalid_status',
         message: `Only draft expenses can be submitted. Current: ${exp.status}` });
 
-    // Attachment required before submit
-    if (!exp.attachment_url && !exp.receipt_url)
+    // Attachment required before submit — check both legacy fields and document_attachments table
+    const attachmentCheck = await query(
+      'SELECT COUNT(*) as cnt FROM document_attachments WHERE document_type=$1 AND document_id=$2',
+      ['expense', id]
+    );
+    const hasAttachment = exp.attachment_url || exp.receipt_url || parseInt(attachmentCheck.rows[0].cnt) > 0;
+    if (!hasAttachment)
       return res.status(400).json({ success: false, error: 'attachment_required',
         message: 'At least one attachment (receipt or document) is required before submitting.' });
 
