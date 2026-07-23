@@ -589,7 +589,10 @@ router.get('/:id/approval-status', async (req, res, next) => {
       steps: stepsResult.rows.map(s => ({
         level: s.level_number, role: s.approver_role,
         approver: s.approver, status: s.status,
-        approved_at: s.approved_at, comments: s.comments
+        approved_at: s.approved_at, comments: s.comments,
+        approver_id: s.approver_user_id,
+        approver_user_id: s.approver_user_id,
+        user_id: s.approver_user_id
       }))
     }});
   } catch(e) { next(e); }
