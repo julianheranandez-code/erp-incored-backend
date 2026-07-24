@@ -692,11 +692,25 @@ router.post('/:id/approve-step', async (req, res, next) => {
         await client.query(`
           UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
           WHERE id=$1`, [bill.approval_request_id]);
+
+        // Auto-create Treasury Payment Request for AP Bill
+        const prResult = await client.query(`
+          INSERT INTO treasury_payment_requests
+            (company_id, source_document_type, source_document_id, amount, currency,
+             payment_priority, status, notes, created_by)
+          VALUES ($1,'AP_BILL',$2,$3,$4,'normal','draft',$5,$6)
+          RETURNING id
+        `, [bill.company_id, String(billId), bill.total_amount, bill.currency || 'MXN',
+            'Pago factura ' + (bill.folio || '#'+billId) + ': ' + (bill.vendor_name || ''),
+            req.user.id]);
+
+        const paymentRequestId = prResult.rows[0]?.id;
+
         await client.query(`
           UPDATE ap_bills SET
             status='approved', approved_at=NOW(), approved_by=$1,
-            updated_at=NOW()
-          WHERE id=$2`, [req.user.id, billId]);
+            treasury_payment_request_id=$2, updated_at=NOW()
+          WHERE id=$3`, [req.user.id, paymentRequestId, billId]);
       } else {
         await client.query(`
           UPDATE treasury_approval_requests SET
