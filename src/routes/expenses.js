@@ -549,7 +549,7 @@ router.post('/:id/approve-step', async (req, res, next) => {
           INSERT INTO treasury_payment_requests
             (company_id, source_document_type, source_document_id, amount, currency,
              payment_priority, status, notes, created_by)
-          VALUES ($1,'EXPENSE',$2,$3,$4,'NORMAL','pending',$5,$6)
+          VALUES ($1,'EXPENSE',$2,$3,$4,'normal','pending',$5,$6)
           RETURNING id
         `, [exp.company_id, String(expId), exp.amount, exp.currency || 'MXN',
             'Reembolso gasto ' + (exp.folio || '#'+expId) + ': ' + (exp.description || ''),
