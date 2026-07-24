@@ -543,9 +543,26 @@ router.post('/:id/approve-step', async (req, res, next) => {
         await client.query(`
           UPDATE treasury_approval_requests SET status='approved', updated_at=NOW()
           WHERE id=$1`, [exp.approval_request_id]);
+
+        // Auto-create Treasury Payment Request
+        const prResult = await client.query(`
+          INSERT INTO treasury_payment_requests
+            (company_id, source_document_type, source_document_id, amount, currency,
+             payment_priority, status, notes, created_by)
+          VALUES ($1,'EXPENSE',$2,$3,$4,'NORMAL','pending',$5,$6)
+          RETURNING id
+        `, [exp.company_id, String(expId), exp.amount, exp.currency || 'MXN',
+            'Reembolso gasto ' + (exp.folio || '#'+expId) + ': ' + (exp.description || ''),
+            exp.created_by]);
+
+        const paymentRequestId = prResult.rows[0]?.id;
+
         await client.query(`
-          UPDATE expenses SET status='approved', updated_at=NOW()
-          WHERE id=$1`, [expId]);
+          UPDATE expenses SET
+            status='payment_request_created',
+            treasury_payment_request_id=$1,
+            updated_at=NOW()
+          WHERE id=$2`, [paymentRequestId, expId]);
       } else {
         await client.query(`
           UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW()
