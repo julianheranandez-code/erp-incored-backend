@@ -472,6 +472,16 @@ router.post('/users/:id/roles', iamSensitiveLimiter, async (req, res, next) => {
         is_active = TRUE, revoked_at = NULL, assigned_by = $4, assigned_at = NOW()
     `, [userId, parseInt(role_id), company_id ? parseInt(company_id) : null, req.user.id]);
 
+    // Auto-create company access when role is assigned for a company
+    if (company_id) {
+      await query(`
+        INSERT INTO user_company_access (user_id, company_id, access_level, assigned_by, is_active)
+        VALUES ($1,$2,'full',$3,true)
+        ON CONFLICT (user_id, company_id) DO UPDATE SET
+          is_active = TRUE, revoked_at = NULL, assigned_by = $3
+      `, [userId, parseInt(company_id), req.user.id]);
+    }
+
     writeAudit({
       userId: req.user.id, action: 'role_assigned',
       entityType: 'user_roles', entityId: null,
