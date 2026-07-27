@@ -70,11 +70,11 @@ router.post('/', async (req, res, next) => {
 
     const result = await query(`
       INSERT INTO client_purchase_orders
-        (company_id, client_id, project_id, folio, po_number, client_po_number,
-         description, total_amount, invoiced_amount, remaining_amount,
+        (company_id, client_id, project_id, folio, po_number,
+         description, total_amount, invoiced_amount,
          currency, exchange_rate, issue_date, start_date, end_date,
          payment_conditions, advance_percent, advance_amount, status, notes, created_by)
-      VALUES ($1,$2,$3,$4,$4,$5,$6,$7,0,$7,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16,$17)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16,$17)
       RETURNING *
     `, [parseInt(company_id), parseInt(client_id),
         project_id ? parseInt(project_id) : null,
