@@ -50,7 +50,7 @@ router.get('/:id', async (req, res, next) => {
   try {
     const emp = await Employee.findById(parseInt(req.params.id));
     if (!emp) return res.status(404).json({ success: false, error: 'not_found', message: 'Empleado no encontrado.' });
-    if (req.user.role !== 'admin' && !['manager', 'hr'].includes(req.user.role) && emp.company_id !== req.user.company_id) {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin' && !['manager', 'hr'].includes(req.user.role) && emp.company_id !== req.user.company_id) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Acceso denegado.' });
     }
     res.json({ success: true, data: emp });

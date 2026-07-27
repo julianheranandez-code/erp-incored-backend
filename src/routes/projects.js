@@ -63,7 +63,7 @@ router.get('/:id', async (req, res, next) => {
     if (!project) return res.status(404).json({ success: false, error: 'not_found', message: 'Proyecto no encontrado.' });
 
     // Enforce company isolation
-    if (req.user.role !== 'admin' && project.company_id !== req.user.company_id) {
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin' && project.company_id !== req.user.company_id) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Acceso denegado.' });
     }
 
@@ -139,7 +139,7 @@ router.put('/:id',
       const project = await Project.findById(parseInt(req.params.id));
       if (!project) return res.status(404).json({ success: false, error: 'not_found', message: 'Proyecto no encontrado.' });
 
-      if (req.user.role !== 'admin' && project.company_id !== req.user.company_id) {
+      if (req.user.role !== 'admin' && req.user.role !== 'super_admin' && project.company_id !== req.user.company_id) {
         return res.status(403).json({ success: false, error: 'forbidden', message: 'Acceso denegado.' });
       }
 
