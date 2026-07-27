@@ -196,6 +196,7 @@ app.use('/api/project-financials', require('./routes/project-financials'));
 
 app.use('/api/vendors', require('./routes/vendors'));
 app.use('/api/client-pos', require('./routes/client-purchase-orders'));
+app.use('/api/rate-cards', require('./routes/rate-cards'));
 
 app.use('/api/treasury', require('./routes/treasury-execute'));
 
