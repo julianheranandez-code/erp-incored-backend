@@ -195,6 +195,7 @@ app.use('/api/treasury', require('./routes/treasury2a'));
 app.use('/api/project-financials', require('./routes/project-financials'));
 
 app.use('/api/vendors', require('./routes/vendors'));
+app.use('/api/client-pos', require('./routes/client-purchase-orders'));
 
 app.use('/api/treasury', require('./routes/treasury-execute'));
 
