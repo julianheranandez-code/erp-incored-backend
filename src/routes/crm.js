@@ -244,7 +244,56 @@ router.put('/leads/:id/stage', async (req, res, next) => {
        parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Lead no encontrado.' });
-    res.json({ success: true, message: 'Etapa actualizada.', data: result.rows[0] });
+
+    const lead = result.rows[0];
+
+    // Auto-create Client Purchase Order when lead is marked as 'ganado'
+    let clientPO = null;
+    if (stage === 'ganado') {
+      try {
+        // Check if OR already exists for this lead
+        const existingPO = await query(
+          'SELECT id, folio FROM client_purchase_orders WHERE company_id=$1 AND client_id=$2 AND status=$3 ORDER BY created_at DESC LIMIT 1',
+          [lead.company_id, lead.client_id, 'active']
+        );
+
+        if (!existingPO.rows[0]) {
+          const COMPANY_CODES = { 1:'INC', 2:'ZHA', 3:'INT', 4:'MIK' };
+          const compCode = COMPANY_CODES[lead.company_id] || 'INC';
+          const now = new Date();
+          const mm = String(now.getMonth()+1).padStart(2,'0');
+          const yy = String(now.getFullYear()).slice(-2);
+          const countResult = await query(
+            'SELECT COUNT(*) as cnt FROM client_purchase_orders WHERE company_id=$1', [lead.company_id]
+          );
+          const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
+          const folio = `OR-${compCode}-${mm}${yy}-${seq}`;
+
+          const poResult = await query(`
+            INSERT INTO client_purchase_orders
+              (company_id, client_id, folio, po_number, client_po_number,
+               description, total_amount, invoiced_amount, remaining_amount,
+               currency, issue_date, status, notes, created_by)
+            VALUES ($1,$2,$3,$3,$4,$5,$6,0,$6,'MXN',NOW(),'active',$7,$8)
+            RETURNING id, folio
+          `, [lead.company_id, lead.client_id, folio,
+              lead.client_po_number || null,
+              lead.title || null,
+              parseFloat(lead.value || 0),
+              `Generado automáticamente desde oportunidad: ${lead.title}`,
+              req.user.id]);
+
+          clientPO = poResult.rows[0];
+        } else {
+          clientPO = existingPO.rows[0];
+        }
+      } catch(poErr) {
+        console.error('[CRM] Failed to auto-create client PO:', poErr.message);
+      }
+    }
+
+    res.json({ success: true, message: 'Etapa actualizada.', data: result.rows[0],
+      client_po: clientPO ? { id: clientPO.id, folio: clientPO.folio } : null });
   } catch (error) { next(error); }
 });
 
