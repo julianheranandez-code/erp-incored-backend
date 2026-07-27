@@ -84,7 +84,7 @@ router.post('/', async (req, res, next) => {
       [parseInt(company_id), type]
     );
     const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
-    const prefix = type === 'CLIENT' ? 'RC' : 'RS';
+    const prefix = type === 'CLIENT' ? 'RCC' : 'RCS';
     const folio = `${prefix}-${compCode}-${mm}${yy}-${seq}`;
 
     let rateCardId;
