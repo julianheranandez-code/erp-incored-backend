@@ -19,11 +19,14 @@ router.get('/', async (req, res, next) => {
     if (client_id) { conditions.push(`cpo.client_id = $${idx++}`); values.push(parseInt(client_id)); }
     if (project_id) { conditions.push(`cpo.project_id = $${idx++}`); values.push(parseInt(project_id)); }
     if (status) { conditions.push(`cpo.status = $${idx++}`); values.push(status); }
+    if (req.query.lead_id) { conditions.push(`cpo.lead_id = $${idx++}`); values.push(parseInt(req.query.lead_id)); }
     const result = await query(`
-      SELECT cpo.*, c.name AS client_name, p.name AS project_name, p.code AS project_code
+      SELECT cpo.*, c.name AS client_name, p.name AS project_name, p.code AS project_code,
+        l.title AS lead_title
       FROM client_purchase_orders cpo
       LEFT JOIN clients c ON c.id = cpo.client_id
       LEFT JOIN projects p ON p.id = cpo.project_id
+      LEFT JOIN leads l ON l.id = cpo.lead_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY cpo.created_at DESC
     `, values);
@@ -52,7 +55,7 @@ router.post('/', async (req, res, next) => {
     const { company_id, client_id, project_id, client_po_number,
       description, total_amount, currency, exchange_rate,
       issue_date, start_date, end_date, payment_conditions,
-      advance_percent, notes } = req.body;
+      advance_percent, notes, lead_id } = req.body;
 
     if (!company_id || !client_id || !total_amount)
       return res.status(400).json({ success: false, error: 'validation_error',
@@ -73,8 +76,8 @@ router.post('/', async (req, res, next) => {
         (company_id, client_id, project_id, folio, po_number,
          description, total_amount, invoiced_amount,
          currency, exchange_rate, issue_date, start_date, end_date,
-         payment_conditions, advance_percent, advance_amount, status, notes, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16,$17)
+         payment_conditions, advance_percent, advance_amount, status, notes, created_by, lead_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,$9,$10,$11,$12,$13,$14,$15,'active',$16,$17,$18)
       RETURNING *
     `, [parseInt(company_id), parseInt(client_id),
         project_id ? parseInt(project_id) : null,
@@ -83,7 +86,7 @@ router.post('/', async (req, res, next) => {
         issue_date || null, start_date || null, end_date || null,
         payment_conditions || null, parseFloat(advance_percent||0),
         advance_percent ? (parseFloat(total_amount)*parseFloat(advance_percent)/100) : 0,
-        notes || null, req.user.id]);
+        notes || null, req.user.id, lead_id ? parseInt(lead_id) : null]);
 
     res.status(201).json({ success: true, data: result.rows[0],
       message: `Orden de compra ${folio} creada exitosamente.` });
