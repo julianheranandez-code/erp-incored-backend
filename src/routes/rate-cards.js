@@ -328,3 +328,32 @@ router.put('/:id', async (req, res, next) => {
     res.json({ success: true, data: result.rows[0] });
   } catch(e) { next(e); }
 });
+
+// PUT /api/rate-cards/:id/items — replace all items
+router.put('/:id/items', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { items } = req.body;
+
+    await withTransaction(async (client) => {
+      // Delete existing items
+      await client.query('DELETE FROM rate_card_items WHERE rate_card_id=$1', [id]);
+      // Insert new items
+      if (items && items.length > 0) {
+        for (const item of items) {
+          await client.query(`
+            INSERT INTO rate_card_items
+              (rate_card_id, code, description, subcategory, subcategory_custom,
+               unit, unit_custom, price, comment)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+          `, [id, item.code||null, item.description,
+              item.subcategory||null, item.subcategory_custom||null,
+              item.unit||null, item.unit_custom||null,
+              parseFloat(item.price||0), item.comment||null]);
+        }
+      }
+    });
+
+    res.json({ success: true, message: `Items actualizados.` });
+  } catch(e) { next(e); }
+});
