@@ -304,3 +304,27 @@ router.delete('/:id/items/:itemId', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// PUT /api/rate-cards/:id
+router.put('/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const rcResult = await query('SELECT * FROM rate_cards WHERE id=$1', [id]);
+    if (!rcResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    if (rcResult.rows[0].status === 'approved')
+      return res.status(400).json({ success: false, error: 'locked', message: 'Rate Card aprobado no puede editarse.' });
+
+    const allowed = ['client_id','carrier','city','state','country','currency','notes'];
+    const fields = [];
+    const params = [];
+    let idx = 1;
+    for (const key of allowed) {
+      if (key in req.body) { fields.push(`${key} = $${idx++}`); params.push(req.body[key]); }
+    }
+    if (!fields.length) return res.status(400).json({ success: false, error: 'no_fields' });
+    params.push(id);
+    const result = await query(
+      `UPDATE rate_cards SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${idx} RETURNING *`, params);
+    res.json({ success: true, data: result.rows[0] });
+  } catch(e) { next(e); }
+});
