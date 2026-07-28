@@ -131,8 +131,7 @@ router.post('/:id/submit', async (req, res, next) => {
     if (rc.rows[0].status !== 'draft')
       return res.status(400).json({ success: false, error: 'invalid_status' });
 
-    const approvalPolicy = await getCompanyApprovalPolicy(rc.rows[0].company_id);
-    const chain = getApprovalChain('EXPENSE', rc.rows[0].total_amount || 999999, approvalPolicy);
+    const chain = getApprovalChain('EXPENSE', 999999, 'MEXICO_V1');
     const { resolved, missing } = await resolveApprovers(rc.rows[0].company_id, chain);
     if (missing.length > 0)
       return res.status(400).json({ success: false, error: 'missing_approvers', missing });
