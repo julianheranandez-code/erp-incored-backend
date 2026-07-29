@@ -531,3 +531,53 @@ router.get('/:id/items', async (req, res, next) => {
     res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch(e) { next(e); }
 });
+
+// PUT /api/ar-invoices/:id
+router.put('/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const existing = await query('SELECT * FROM ar_invoices WHERE id=$1', [id]);
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    if (existing.rows[0].status === 'approved')
+      return res.status(400).json({ success: false, error: 'locked', message: 'Invoice aprobada no puede editarse.' });
+
+    const allowed = [
+      'client_id','project_id','client_po_id','description','notes',
+      'subtotal','tax_percent','tax_amount','total_amount','currency',
+      'exchange_rate','issue_date','due_date','payment_terms',
+      'discount_percent','discount_amount','discount_days',
+      'retainage_percent','retainage_amount','retainage_release_days',
+      'project_period_start','project_period_end','project_week_number',
+      'task_list_number','cfdi_uuid','cfdi_xml_url'
+    ];
+    const fields = [];
+    const params = [];
+    let idx = 1;
+    for (const key of allowed) {
+      if (key in req.body) { fields.push(`${key} = $${idx++}`); params.push(req.body[key]); }
+    }
+    if (!fields.length) return res.status(400).json({ success: false, error: 'no_fields' });
+    params.push(id);
+    const result = await query(
+      `UPDATE ar_invoices SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${idx} RETURNING *`, params);
+
+    // Update items if provided
+    if (req.body.items) {
+      await query('DELETE FROM ar_invoice_items WHERE invoice_id=$1', [id]);
+      for (const item of req.body.items) {
+        await query(`
+          INSERT INTO ar_invoice_items
+            (invoice_id, rate_card_item_id, code, description, subcategory,
+             unit, quantity, unit_price, comment)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `, [id, item.rate_card_item_id ? parseInt(item.rate_card_item_id) : null,
+            item.code||null, item.description,
+            item.subcategory||null, item.unit||null,
+            parseFloat(item.quantity||1), parseFloat(item.unit_price||0),
+            item.comment||null]);
+      }
+    }
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch(e) { next(e); }
+});
