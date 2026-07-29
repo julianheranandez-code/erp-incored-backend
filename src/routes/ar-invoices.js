@@ -118,15 +118,28 @@ router.post('/', async (req, res, next) => {
   try {
     const {
       company_id, client_id, project_id, client_po_id,
-      folio, description, notes, subtotal, tax_percent = 0,
+      description, notes, subtotal, tax_percent = 0,
       issue_date = new Date().toISOString().slice(0,10),
       due_date, currency = 'MXN', exchange_rate = 1,
-      cfdi_uuid, cfdi_xml_url
+      cfdi_uuid, cfdi_xml_url, items, rate_card_id,
+      client_po_reference
     } = req.body;
 
-    if (!company_id || !client_id || !project_id || !folio || !subtotal || !issue_date || !due_date)
+    if (!company_id || !client_id || !project_id || !subtotal || !issue_date || !due_date)
       return res.status(400).json({ success: false, error: 'validation_error',
-        message: 'Required: company_id, client_id, project_id, folio, subtotal, issue_date, due_date' });
+        message: 'Required: company_id, client_id, project_id, subtotal, issue_date, due_date' });
+
+    // Auto-generate folio IN-{COMPANY}-{MMYY}-{SEQ}
+    const COMPANY_CODES = { 1:'INC', 2:'ZHA', 3:'INT', 4:'MIK' };
+    const compCode = COMPANY_CODES[parseInt(company_id)] || 'INC';
+    const now = new Date();
+    const mm = String(now.getMonth()+1).padStart(2,'0');
+    const yy = String(now.getFullYear()).slice(-2);
+    const countResult = await query(
+      'SELECT COUNT(*) as cnt FROM ar_invoices WHERE company_id=$1', [parseInt(company_id)]
+    );
+    const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
+    const folio = `IN-${compCode}-${mm}${yy}-${seq}`;
 
     const tax_amount   = parseFloat(subtotal) * (parseFloat(tax_percent) / 100);
     const total_amount = parseFloat(subtotal) + tax_amount;
@@ -163,9 +176,27 @@ router.post('/', async (req, res, next) => {
         currency, parseFloat(exchange_rate), issue_date, due_date,
         cfdi_uuid||null, cfdi_xml_url||null, req.user.id]);
 
+    // Save invoice items if provided
+    const invoiceId = result.rows[0].id;
+    if (items && items.length > 0) {
+      for (const item of items) {
+        await query(`
+          INSERT INTO ar_invoice_items
+            (invoice_id, rate_card_item_id, code, description, subcategory,
+             unit, quantity, unit_price, comment)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `, [invoiceId,
+            item.rate_card_item_id ? parseInt(item.rate_card_item_id) : null,
+            item.code||null, item.description,
+            item.subcategory||null, item.unit||null,
+            parseFloat(item.quantity||1), parseFloat(item.unit_price||0),
+            item.comment||null]);
+      }
+    }
+
     writeAudit({
       userId: req.user.id, action: 'ar_invoice_created',
-      entityType: 'ar_invoices', entityId: String(result.rows[0].id),
+      entityType: 'ar_invoices', entityId: String(invoiceId),
       companyId: parseInt(company_id),
       newValues: { folio, total_amount, client_po_id },
       ip: req.ip, userAgent: req.get('user-agent')
