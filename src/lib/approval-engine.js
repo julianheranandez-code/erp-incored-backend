@@ -268,12 +268,11 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
         { level: 3, role: 'executive_approver' }
       ];
 
-    // AR_INVOICE — 3 levels: PMO → Accounting → Executive
+    // AR_INVOICE — 2 levels: PMO → Accounting
     case 'AR_INVOICE':
       return [
         { level: 1, role: 'operations_manager' },
-        { level: 2, role: 'accounting_manager' },
-        { level: 3, role: 'executive_approver' }
+        { level: 2, role: 'accounting_manager' }
       ];
 
     // PAYROLL — same chain for both policies
