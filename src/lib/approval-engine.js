@@ -268,11 +268,12 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
         { level: 3, role: 'executive_approver' }
       ];
 
-    // AR_INVOICE (Sprint 3E) — no thresholds, always 2 levels
+    // AR_INVOICE — 3 levels: PMO → Accounting → Executive
     case 'AR_INVOICE':
       return [
-        { level: 1, role: 'accounting_manager' },
-        { level: 2, role: 'finance' }
+        { level: 1, role: 'operations_manager' },
+        { level: 2, role: 'accounting_manager' },
+        { level: 3, role: 'executive_approver' }
       ];
 
     // PAYROLL — same chain for both policies
