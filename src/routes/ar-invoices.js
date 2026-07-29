@@ -225,7 +225,7 @@ router.post('/:id/submit', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'invalid_status',
         message: `Only draft invoices can be submitted. Current: ${invoice.status}` });
 
-    const approvalPolicy = await getCompanyApprovalPolicy(invoice.company_id);
+    const approvalPolicy = 'MEXICO_V1'; // Force MEXICO_V1 for AR_INVOICE
     let chain;
     try {
       chain = getApprovalChain('AR_INVOICE', invoice.total_amount, approvalPolicy);
