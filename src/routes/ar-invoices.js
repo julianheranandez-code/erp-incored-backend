@@ -122,7 +122,7 @@ router.post('/', async (req, res, next) => {
       issue_date = new Date().toISOString().slice(0,10),
       due_date, currency = 'MXN', exchange_rate = 1,
       cfdi_uuid, cfdi_xml_url, items, rate_card_id,
-      client_po_reference
+      client_po_reference, project_period_start, project_period_end
     } = req.body;
 
     if (!company_id || !client_id || !project_id || !subtotal || !issue_date || !due_date)
@@ -165,16 +165,19 @@ router.post('/', async (req, res, next) => {
         folio, description, notes, subtotal, tax_percent, tax_amount,
         total_amount, total_paid, outstanding_balance,
         currency, exchange_rate, status, issue_date, due_date,
-        cfdi_uuid, cfdi_xml_url, approval_required, created_by
+        cfdi_uuid, cfdi_xml_url, approval_required, created_by,
+        project_period_start, project_period_end, project_week_number
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$11,
-                $12,$13,'draft',$14,$15,$16,$17,true,$18)
+                $12,$13,'draft',$14,$15,$16,$17,true,$18,$19,$20,$21)
       RETURNING *
     `, [parseInt(company_id), parseInt(client_id), parseInt(project_id),
         client_po_id ? parseInt(client_po_id) : null,
         folio, description||null, notes||null,
         parseFloat(subtotal), parseFloat(tax_percent), tax_amount, total_amount,
         currency, parseFloat(exchange_rate), issue_date, due_date,
-        cfdi_uuid||null, cfdi_xml_url||null, req.user.id]);
+        cfdi_uuid||null, cfdi_xml_url||null, req.user.id,
+        project_period_start||null, project_period_end||null,
+        project_period_start ? Math.ceil((new Date(project_period_start) - new Date(new Date(project_period_start).getFullYear(),0,1)) / (7*24*60*60*1000)) : null]);
 
     // Save invoice items if provided
     const invoiceId = result.rows[0].id;
