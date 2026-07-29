@@ -581,3 +581,107 @@ router.put('/:id', async (req, res, next) => {
     res.json({ success: true, data: result.rows[0] });
   } catch(e) { next(e); }
 });
+
+// GET /api/ar-invoices/:id/approval-status
+router.get('/:id/approval-status', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id);
+    const invResult = await query('SELECT * FROM ar_invoices WHERE id=$1', [id]);
+    if (!invResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const inv = invResult.rows[0];
+    if (!inv.approval_request_id)
+      return res.json({ success: true, data: { status: inv.status, steps: [] } });
+
+    const stepsResult = await query(`
+      SELECT s.*, CONCAT(u.first_name,' ',u.last_name) AS approver
+      FROM treasury_approval_steps s
+      LEFT JOIN users u ON u.id = s.approver_user_id
+      WHERE s.request_id=$1 ORDER BY s.level_number ASC
+    `, [inv.approval_request_id]);
+
+    res.json({ success: true, data: {
+      invoice_status: inv.status,
+      approval_request_id: inv.approval_request_id,
+      steps: stepsResult.rows.map(s => ({
+        level: s.level_number, role: s.approver_role,
+        approver: s.approver, approver_id: s.approver_user_id,
+        approver_user_id: s.approver_user_id,
+        status: s.status, approved_at: s.approved_at, comments: s.comments
+      }))
+    }});
+  } catch(e) { next(e); }
+});
+
+// POST /api/ar-invoices/:id/approve-step
+router.post('/:id/approve-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const id = parseInt(req.params.id);
+    const invResult = await query('SELECT * FROM ar_invoices WHERE id=$1', [id]);
+    if (!invResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const inv = invResult.rows[0];
+    if (inv.status !== 'pending_approval')
+      return res.status(400).json({ success: false, error: 'invalid_status' });
+    if (inv.created_by === req.user.id)
+      return res.status(403).json({ success: false, error: 'segregation_of_duties',
+        message: 'No puedes aprobar una factura que tú mismo creaste.' });
+
+    const stepResult = await query(`
+      SELECT * FROM treasury_approval_steps
+      WHERE request_id=$1 AND approver_user_id=$2 AND status='pending'
+      ORDER BY level_number ASC LIMIT 1
+    `, [inv.approval_request_id, req.user.id]);
+
+    if (!stepResult.rows[0])
+      return res.status(403).json({ success: false, error: 'not_your_turn' });
+
+    const step = stepResult.rows[0];
+    let stillPending = 1;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_steps SET status='approved', approved_at=NOW(), 
+        comments=$1, updated_at=NOW() WHERE id=$2
+      `, [comments||null, step.id]);
+
+      const pending = await client.query(`
+        SELECT COUNT(*) as cnt FROM treasury_approval_steps
+        WHERE request_id=$1 AND status='pending'
+      `, [inv.approval_request_id]);
+
+      stillPending = parseInt(pending.rows[0].cnt);
+
+      if (stillPending === 0) {
+        await client.query(`UPDATE treasury_approval_requests SET status='approved', updated_at=NOW() WHERE id=$1`, [inv.approval_request_id]);
+        await client.query(`UPDATE ar_invoices SET approval_status='approved', approved_at=NOW(), approved_by=$1, status='approved', updated_at=NOW() WHERE id=$2`, [req.user.id, id]);
+      } else {
+        await client.query(`UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW() WHERE id=$2`, [step.level_number+1, inv.approval_request_id]);
+      }
+    });
+
+    res.json({ success: true, message: stillPending === 0 ? 'AR Invoice approved!' : `Level ${step.level_number} approved.` });
+  } catch(e) { next(e); }
+});
+
+// POST /api/ar-invoices/:id/reject-step
+router.post('/:id/reject-step', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const id = parseInt(req.params.id);
+    const invResult = await query('SELECT * FROM ar_invoices WHERE id=$1', [id]);
+    if (!invResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const inv = invResult.rows[0];
+    if (inv.status !== 'pending_approval')
+      return res.status(400).json({ success: false, error: 'invalid_status' });
+
+    await withTransaction(async (client) => {
+      if (inv.approval_request_id) {
+        await client.query(`UPDATE treasury_approval_steps SET status='rejected', approved_at=NOW(), comments=$1, updated_at=NOW() WHERE request_id=$2 AND approver_user_id=$3 AND status='pending'`, [comments||null, inv.approval_request_id, req.user.id]);
+        await client.query(`UPDATE treasury_approval_requests SET status='rejected', updated_at=NOW() WHERE id=$1`, [inv.approval_request_id]);
+      }
+      await client.query(`UPDATE ar_invoices SET status='draft', approval_status='rejected', rejection_reason=$1, updated_at=NOW() WHERE id=$2`, [comments||null, id]);
+    });
+
+    res.json({ success: true, message: 'AR Invoice rechazada.' });
+  } catch(e) { next(e); }
+});
