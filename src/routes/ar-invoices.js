@@ -517,3 +517,17 @@ router.post('/:id/cancel', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// GET /api/ar-invoices/:id/items
+router.get('/:id/items', async (req, res, next) => {
+  try {
+    const result = await query(`
+      SELECT aii.*, rci.code AS rc_code
+      FROM ar_invoice_items aii
+      LEFT JOIN rate_card_items rci ON rci.id = aii.rate_card_item_id
+      WHERE aii.invoice_id = $1
+      ORDER BY aii.id
+    `, [parseInt(req.params.id)]);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch(e) { next(e); }
+});
