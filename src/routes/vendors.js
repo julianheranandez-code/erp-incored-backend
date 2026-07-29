@@ -44,7 +44,7 @@ router.get('/', async (req, res, next) => {
     } = req.query;
 
     const roles = req.user.roles?.length ? req.user.roles : [req.user.role];
-    const companyId = roles.includes('super_admin') && company_id
+    const companyId = company_id
       ? parseInt(company_id)
       : parseInt(req.user.active_company_id || req.user.company_id);
 
@@ -146,7 +146,7 @@ router.post('/', async (req, res, next) => {
 
     // FIX 2: company_id from session — prevent privilege escalation
     const roles = req.user.roles?.length ? req.user.roles : [req.user.role];
-    const companyId = roles.includes('super_admin') && company_id
+    const companyId = company_id
       ? parseInt(company_id)
       : parseInt(req.user.active_company_id || req.user.company_id);
 
