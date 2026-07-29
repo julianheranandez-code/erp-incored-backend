@@ -36,7 +36,7 @@ router.get('/', async (req, res, next) => {
             page = 1, limit = 50 } = req.query;
 
     const roles = getEffectiveRoles(req.user);
-    const companyId = roles.includes('super_admin') && company_id
+    const companyId = company_id
       ? parseInt(company_id)
       : parseInt(req.user.active_company_id || req.user.company_id);
 
