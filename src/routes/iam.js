@@ -1064,3 +1064,60 @@ router.get('/users/:id/effective-permissions', async (req, res, next) => {
 });
 
 module.exports = router;
+
+// GET /api/iam/approval-assignments?company_id=X
+router.get('/approval-assignments', async (req, res, next) => {
+  try {
+    const { company_id } = req.query;
+    const roles = ['operations_manager','accounting_manager','finance','procurement','executive_approver','supervisor'];
+    
+    const result = await query(`
+      SELECT ara.*, 
+        CONCAT(u.first_name,' ',u.last_name) AS user_name,
+        u.email AS user_email
+      FROM approval_role_assignments ara
+      LEFT JOIN users u ON u.id = ara.user_id
+      WHERE ara.company_id = $1
+      ORDER BY ara.approval_role
+    `, [parseInt(company_id)]);
+
+    // Return all 6 roles, filling missing ones as unassigned
+    const assignments = roles.map(role => {
+      const existing = result.rows.find(r => r.approval_role === role);
+      return existing || { approval_role: role, company_id: parseInt(company_id), user_id: null, user_name: null, user_email: null, is_active: false };
+    });
+
+    res.json({ success: true, data: assignments });
+  } catch(e) { next(e); }
+});
+
+// PUT /api/iam/approval-assignments
+router.put('/approval-assignments', async (req, res, next) => {
+  try {
+    const { company_id, approval_role, user_id } = req.body;
+    if (!company_id || !approval_role || !user_id)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: company_id, approval_role, user_id' });
+
+    await query(`
+      INSERT INTO approval_role_assignments (company_id, approval_role, user_id, is_active)
+      VALUES ($1,$2,$3,true)
+      ON CONFLICT (company_id, approval_role) DO UPDATE SET
+        user_id = $3, is_active = true
+    `, [parseInt(company_id), approval_role, user_id]);
+
+    res.json({ success: true, message: 'Approval assignment updated.' });
+  } catch(e) { next(e); }
+});
+
+// PATCH /api/iam/approval-assignments/toggle
+router.patch('/approval-assignments/toggle', async (req, res, next) => {
+  try {
+    const { company_id, approval_role, is_active } = req.body;
+    await query(`
+      UPDATE approval_role_assignments SET is_active=$1
+      WHERE company_id=$2 AND approval_role=$3
+    `, [is_active, parseInt(company_id), approval_role]);
+    res.json({ success: true });
+  } catch(e) { next(e); }
+});
