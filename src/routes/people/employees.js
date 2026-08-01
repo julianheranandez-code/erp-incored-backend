@@ -35,7 +35,7 @@ router.get('/', async (req, res, next) => {
         TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name_paternal, e.last_name, ''), ' ', COALESCE(e.last_name_maternal,''))) AS full_name,
         e.first_name, COALESCE(e.last_name_paternal, e.last_name) AS last_name,
         e.preferred_name, e.work_email, e.status AS employment_status,
-        e.hire_date, e.country_code, e.is_active,
+        e.hire_date, e.country_code, true AS is_active,
         d.name AS department_name, pc.title AS position_title
       FROM employees e
       LEFT JOIN employee_positions ep ON ep.employee_id = e.id AND ep.is_current = true
