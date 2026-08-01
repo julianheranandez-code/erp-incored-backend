@@ -204,15 +204,6 @@ app.use('/api/treasury', require('./routes/treasury-execute'));
 
 
 
-app.use(notFoundHandler);
-
-if (process.env.SENTRY_DSN) {
-  try {
-    const Sentry = require('@sentry/node');
-    app.use(Sentry.Handlers.errorHandler());
-  } catch (_) {}
-}
-
 // ─── PHASE 0A: Administration Domain ─────────────────────────
 app.use('/api/admin/business-units',   require('./routes/admin/business-units'));
 app.use('/api/admin/departments',      require('./routes/admin/departments'));
@@ -221,6 +212,15 @@ app.use('/api/admin/fiscal-calendars', require('./routes/admin/fiscal-calendars'
 app.use('/api/admin/work-calendars',   require('./routes/admin/work-calendars'));
 app.use('/api/admin/company-policies', require('./routes/admin/company-policies'));
 app.use('/api/admin',                  require('./routes/admin/reference'));
+
+app.use(notFoundHandler);
+
+if (process.env.SENTRY_DSN) {
+  try {
+    const Sentry = require('@sentry/node');
+    app.use(Sentry.Handlers.errorHandler());
+  } catch (_) {}
+}
 
 app.use(errorHandler);
 
