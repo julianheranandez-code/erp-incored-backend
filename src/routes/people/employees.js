@@ -19,7 +19,7 @@ router.get('/', async (req, res, next) => {
     const { company_id, status, search, page = 1, limit = 20 } = req.query;
     if (!company_id) return res.status(400).json({ success: false, error: 'company_id required' });
     const offset = (parseInt(page) - 1) * parseInt(limit);
-    let conditions = ['(e.primary_company_id = $1 OR e.company_id = $1)'];
+    let conditions = ['e.company_id = $1'];
     let values = [parseInt(company_id)];
     let idx = 2;
     if (status) { conditions.push(`e.status = $${idx++}`); values.push(status); }
@@ -90,7 +90,7 @@ router.get('/:uuid', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   try {
     const {
-      primary_company_id, company_id,
+      company_id,
       first_name, last_name_paternal, last_name, last_name_maternal,
       preferred_name, personal_email, work_email, personal_phone,
       date_of_birth, gender, nationality, country_code = 'MX',
@@ -110,7 +110,7 @@ router.post('/', async (req, res, next) => {
     await withTransaction(async (client) => {
       const empResult = await client.query(`
         INSERT INTO employees (
-          employee_number, primary_company_id, company_id,
+          employee_number, company_id,
           first_name, last_name_paternal, last_name, last_name_maternal,
           preferred_name, personal_email, work_email, personal_phone,
           birth_date, gender, nationality, country_code,
