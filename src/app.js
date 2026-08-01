@@ -177,6 +177,15 @@ app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
+// ─── PHASE 0A: Administration Domain ─────────────────────────
+app.use('/api/admin/business-units',   require('./routes/admin/business-units'));
+app.use('/api/admin/departments',      require('./routes/admin/departments'));
+app.use('/api/admin/cost-centers',     require('./routes/admin/cost-centers'));
+app.use('/api/admin/fiscal-calendars', require('./routes/admin/fiscal-calendars'));
+app.use('/api/admin/work-calendars',   require('./routes/admin/work-calendars'));
+app.use('/api/admin/company-policies', require('./routes/admin/company-policies'));
+app.use('/api/admin',                  require('./routes/admin/reference'));
+
 app.use('/api',              reportsRoutes);       // /api/reports/*, /api/dashboards/*
 app.use('/api/files',        filesRoutes);
 
@@ -203,15 +212,6 @@ app.use('/api/treasury', require('./routes/treasury-execute'));
 
 
 
-
-// ─── PHASE 0A: Administration Domain ─────────────────────────
-app.use('/api/admin/business-units',   require('./routes/admin/business-units'));
-app.use('/api/admin/departments',      require('./routes/admin/departments'));
-app.use('/api/admin/cost-centers',     require('./routes/admin/cost-centers'));
-app.use('/api/admin/fiscal-calendars', require('./routes/admin/fiscal-calendars'));
-app.use('/api/admin/work-calendars',   require('./routes/admin/work-calendars'));
-app.use('/api/admin/company-policies', require('./routes/admin/company-policies'));
-app.use('/api/admin',                  require('./routes/admin/reference'));
 
 app.use(notFoundHandler);
 
