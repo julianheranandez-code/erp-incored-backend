@@ -213,8 +213,6 @@ if (process.env.SENTRY_DSN) {
   } catch (_) {}
 }
 
-app.use(errorHandler);
-
 // ─── PHASE 0A: Administration Domain ─────────────────────────
 app.use('/api/admin/business-units',   require('./routes/admin/business-units'));
 app.use('/api/admin/departments',      require('./routes/admin/departments'));
@@ -223,5 +221,7 @@ app.use('/api/admin/fiscal-calendars', require('./routes/admin/fiscal-calendars'
 app.use('/api/admin/work-calendars',   require('./routes/admin/work-calendars'));
 app.use('/api/admin/company-policies', require('./routes/admin/company-policies'));
 app.use('/api/admin',                  require('./routes/admin/reference'));
+
+app.use(errorHandler);
 
 module.exports = app;
