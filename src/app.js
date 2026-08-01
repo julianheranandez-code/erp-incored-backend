@@ -177,6 +177,11 @@ app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
+// ─── PHASE 1A: People Domain ──────────────────────────────────
+app.use('/api/people/positions',      require('./routes/people/positions'));
+app.use('/api/people/skills-catalog', require('./routes/people/skills-catalog'));
+app.use('/api/people/employees',      require('./routes/people/employees'));
+
 // ─── PHASE 0A: Administration Domain ─────────────────────────
 app.use('/api/admin/business-units',   require('./routes/admin/business-units'));
 app.use('/api/admin/departments',      require('./routes/admin/departments'));
