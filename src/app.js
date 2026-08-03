@@ -177,6 +177,9 @@ app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
+// ─── PHASE 4: Financial Obligations ───────────────────────────
+app.use('/api/obligations', require('./routes/obligations/obligations'));
+
 // ─── PHASE 3: Assets Domain ───────────────────────────────────
 app.use('/api/assets', require('./routes/assets/assets'));
 
