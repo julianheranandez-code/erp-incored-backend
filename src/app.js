@@ -177,6 +177,9 @@ app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
+// ─── PHASE 3: Assets Domain ───────────────────────────────────
+app.use('/api/assets', require('./routes/assets/assets'));
+
 // ─── PHASE 2: Time Domain ─────────────────────────────────────
 app.use('/api/time/attendance',  require('./routes/time/attendance'));
 app.use('/api/time/leave',       require('./routes/time/leave'));
