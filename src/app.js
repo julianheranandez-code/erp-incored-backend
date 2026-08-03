@@ -177,6 +177,9 @@ app.use('/api/crm', attachmentsRoutes);
 app.use('/api/crm',        crmRoutes);          // /api/clients, /api/quotes, /api/leads, /api/suppliers
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/employees',    employeesRoutes);
+// ─── PHASE 6: Compliance Platform ─────────────────────────────
+app.use('/api/compliance', require('./routes/compliance/compliance'));
+
 // ─── PHASE 5: Payroll Platform ────────────────────────────────
 app.use('/api/payroll', require('./routes/payroll/payroll'));
 
