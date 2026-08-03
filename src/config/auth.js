@@ -25,6 +25,7 @@ const generateAccessToken = (payload) => {
       role: payload.role,
       company_id: payload.company_id,
       name: payload.name,
+      company_access: payload.company_access || [payload.company_id],
     },
     JWT_SECRET,
     {

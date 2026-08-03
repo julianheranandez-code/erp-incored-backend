@@ -32,7 +32,7 @@ router.use(verifyToken, auditLog);
 router.get('/clients', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
+    const companyId = req.query.company_id || req.user.company_id;
     const result = await Client.findAll({ type: req.query.type || 'cliente', search: req.query.search, companyId, page, limit });
     res.json({ success: true, ...buildPaginatedResponse(result.data, result.total, page, limit) });
   } catch (error) { next(error); }
@@ -151,7 +151,7 @@ router.post('/suppliers', validate(schemas.createClient), async (req, res, next)
 router.get('/leads', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
+    const companyId = req.query.company_id || req.user.company_id;
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -314,7 +314,7 @@ router.put('/leads/:id/stage', async (req, res, next) => {
 router.get('/quotes', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const companyId = (req.user.role === 'admin' || req.user.role === 'super_admin') ? req.query.company_id : req.user.company_id;
+    const companyId = req.query.company_id || req.user.company_id;
     const result = await Quote.findAll({ companyId, clientId: req.query.client_id, status: req.query.status, search: req.query.search, page, limit });
     res.json({ success: true, ...buildPaginatedResponse(result.data, result.total, page, limit) });
   } catch (error) { next(error); }

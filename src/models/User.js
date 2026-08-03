@@ -12,10 +12,12 @@ class User {
    */
   static async findByEmail(email) {
     const result = await query(
-      `SELECT id, email, password_hash, CONCAT(first_name, ' ', last_name) AS name, phone, company_id, role, status,
-              must_change_password, last_login_at, login_attempts, locked_until,
-              two_fa_enabled, two_fa_secret, created_at
-       FROM users WHERE email = $1`,
+      `SELECT u.id, u.email, u.password_hash, CONCAT(u.first_name, ' ', u.last_name) AS name,
+              u.phone, u.company_id, u.role, u.status,
+              u.must_change_password, u.last_login_at, u.login_attempts, u.locked_until,
+              u.two_fa_enabled, u.two_fa_secret, u.created_at,
+              ARRAY(SELECT company_id FROM user_company_access WHERE user_id = u.id) AS company_access
+       FROM users u WHERE u.email = $1`,
       [email.toLowerCase()]
     );
     return result.rows[0] || null;
