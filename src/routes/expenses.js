@@ -185,7 +185,7 @@ router.post('/', async (req, res, next) => {
     const nowDate = new Date();
     const yymm = String(nowDate.getMonth()+1).padStart(2,'0') + String(nowDate.getFullYear()).slice(-2);
     const countResult = await query(
-      'SELECT COUNT(*) as cnt FROM expenses WHERE company_id=$1', [parseInt(company_id)]
+      'SELECT COUNT(*) as cnt FROM expenses WHERE company_id=$1 AND TO_CHAR(created_at, \'MMYY\') = $2', [parseInt(company_id), mm+yy]
     );
     const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
     const autoFolio = `EXP-${compCode}-${yymm}-${seq}`;

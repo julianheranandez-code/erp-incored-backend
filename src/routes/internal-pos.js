@@ -230,7 +230,7 @@ router.post('/', async (req, res, next) => {
       const now = new Date();
       const yymm = String(now.getMonth()+1).padStart(2,'0') + String(now.getFullYear()).slice(-2);
       const countResult = await query(
-        'SELECT COUNT(*) as cnt FROM internal_purchase_orders WHERE company_id=$1',
+        'SELECT COUNT(*) as cnt FROM internal_purchase_orders WHERE company_id=$1 AND TO_CHAR(created_at, \'MMYY\') = $2',
         [parseInt(company_id)]
       );
       const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
