@@ -268,6 +268,14 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
         { level: 3, role: 'executive_approver' }
       ];
 
+    // RATE_CARD — 3 levels: Ops → Accounting → Finance
+    case 'RATE_CARD':
+      return [
+        { level: 1, role: 'operations_manager' },
+        { level: 2, role: 'accounting_manager' },
+        { level: 3, role: 'finance' }
+      ];
+
     // AR_INVOICE — 2 levels: PMO → Accounting
     case 'AR_INVOICE':
       return [
