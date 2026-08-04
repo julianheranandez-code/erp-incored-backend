@@ -136,7 +136,7 @@ router.post('/', async (req, res, next) => {
     const mm = String(now.getMonth()+1).padStart(2,'0');
     const yy = String(now.getFullYear()).slice(-2);
     const countResult = await query(
-      'SELECT COUNT(*) as cnt FROM ar_invoices WHERE company_id=$1', [parseInt(company_id)]
+      'SELECT COUNT(*) as cnt FROM ar_invoices WHERE company_id=$1 AND TO_CHAR(issue_date, 'MMYY') = $2', [parseInt(company_id), mm+yy]
     );
     const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
     const folio = `IN-${compCode}-${mm}${yy}-${seq}`;
