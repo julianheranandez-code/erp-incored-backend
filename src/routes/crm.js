@@ -111,7 +111,8 @@ router.put('/clients/:id', async (req, res, next) => {
 router.get('/suppliers', async (req, res, next) => {
   try {
     const { page, limit } = getPagination(req.query);
-    const result = await Client.findAll({ type: 'proveedor', search: req.query.search, page, limit });
+    const companyId = req.query.company_id || req.user.company_id;
+    const result = await Client.findAll({ type: 'proveedor', search: req.query.search, companyId, page, limit });
     res.json({ success: true, ...buildPaginatedResponse(result.data, result.total, page, limit) });
   } catch (error) { next(error); }
 });
