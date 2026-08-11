@@ -10,6 +10,9 @@ const { authorize, authorizePermission } = require('../middleware/authorization'
 const { validate, schemas } = require('../middleware/validation');
 const { auditLog } = require('../middleware/audit');
 const { getPagination, buildPaginatedResponse, generateProjectCode } = require('../utils/helpers');
+const { getApprovalChain, resolveApprovers, getCompanyApprovalPolicy } = require('../lib/approval-engine');
+const { withTransaction } = require('../config/database');
+const { writeAudit } = require('../middleware/audit');
 
 router.use(verifyToken, auditLog);
 
