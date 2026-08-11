@@ -319,7 +319,7 @@ router.post('/:id/submit', async (req, res, next) => {
         message: `Proyecto en estado ${project.approval_status} no puede enviarse a aprobación.` });
 
     const approvalPolicy = await getCompanyApprovalPolicy(project.company_id);
-    const budget = parseFloat(project.budget_cost || project.estimated_cost || 0);
+    const budget = parseFloat(project.budget_amount || project.estimated_cost || 0);
     const chain = getApprovalChain('PROJECT', budget, approvalPolicy);
     const { resolved, missing } = await resolveApprovers(project.company_id, chain);
 
