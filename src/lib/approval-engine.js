@@ -154,6 +154,18 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
           { level: 3, role: 'accounting_manager' }
         ];
 
+      // PROJECT — USA_V1: 2 or 3 levels based on budget in USD
+      case 'PROJECT':
+        if (amt <= 65000) return [
+          { level: 1, role: 'accounting_manager' },
+          { level: 2, role: 'finance' }
+        ];
+        return [
+          { level: 1, role: 'accounting_manager' },
+          { level: 2, role: 'finance' },
+          { level: 3, role: 'executive_approver' }
+        ];
+
       // Sprint 3 types not yet configured for USA_V1
       case 'EXPENSE':
       case 'AP_BILL':
