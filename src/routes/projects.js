@@ -66,7 +66,8 @@ router.get('/:id', async (req, res, next) => {
     if (!project) return res.status(404).json({ success: false, error: 'not_found', message: 'Proyecto no encontrado.' });
 
     // Enforce company isolation
-    if (req.user.role !== 'admin' && req.user.role !== 'super_admin' && project.company_id !== req.user.company_id) {
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(project.company_id)) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Acceso denegado.' });
     }
 
