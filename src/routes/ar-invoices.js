@@ -179,6 +179,16 @@ router.post('/', async (req, res, next) => {
         project_period_start||null, project_period_end||null,
         project_period_start ? Math.ceil((new Date(project_period_start) - new Date(new Date(project_period_start).getFullYear(),0,1)) / (7*24*60*60*1000)) : null]);
 
+    // Deduct from Client PO invoiced_amount (remaining_amount is generated)
+    if (client_po_id) {
+      await query(`
+        UPDATE client_purchase_orders SET
+          invoiced_amount = COALESCE(invoiced_amount, 0) + $1,
+          updated_at = NOW()
+        WHERE id = $2
+      `, [total_amount, parseInt(client_po_id)]);
+    }
+
     // Save invoice items if provided
     const invoiceId = result.rows[0].id;
     if (items && items.length > 0) {
