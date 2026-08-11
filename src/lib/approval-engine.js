@@ -268,6 +268,30 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
         { level: 3, role: 'executive_approver' }
       ];
 
+    // PROJECT — 2 or 3 levels based on budget
+    case 'PROJECT':
+      if (policy === 'USA_V1') {
+        if (amt <= 65000) return [
+          { level: 1, role: 'accounting_manager' },
+          { level: 2, role: 'finance' }
+        ];
+        return [
+          { level: 1, role: 'accounting_manager' },
+          { level: 2, role: 'finance' },
+          { level: 3, role: 'executive_approver' }
+        ];
+      }
+      // MEXICO_V1
+      if (amt <= 350000) return [
+        { level: 1, role: 'accounting_manager' },
+        { level: 2, role: 'finance' }
+      ];
+      return [
+        { level: 1, role: 'accounting_manager' },
+        { level: 2, role: 'finance' },
+        { level: 3, role: 'executive_approver' }
+      ];
+
     // RATE_CARD — 3 levels: Ops → Accounting → Finance
     case 'RATE_CARD':
       return [
