@@ -840,7 +840,7 @@ router.get('/deliverables/:uuid/evidence', async (req, res, next) => {
       SELECT d.id, d.uuid, d.client_approval_status, d.client_approval_method,
         d.client_approved_by, d.client_approved_at, d.client_approval_reference,
         d.client_approval_document_id, d.requires_client_approval,
-        da.file_name, da.file_url, da.uploaded_at
+        da.original_filename AS file_name, da.storage_path AS file_url, da.uploaded_at
       FROM project_deliverables d
       LEFT JOIN document_attachments da ON da.id = d.client_approval_document_id
       WHERE d.uuid=$1 AND d.company_id=$2
