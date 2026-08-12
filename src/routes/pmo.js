@@ -778,8 +778,8 @@ router.get('/deliverables', async (req, res, next) => {
         d.project_id, d.company_id, d.created_at, d.updated_at,
         p.code AS project_code, p.name AS project_name,
         CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal, e.last_name,'')) AS owner_name,
-        CONCAT(ab.first_name,' ',COALESCE(ab.last_name_paternal, ab.last_name,'')) AS accepted_by_name,
-        CONCAT(rb.first_name,' ',COALESCE(rb.last_name_paternal, rb.last_name,'')) AS ready_to_bill_by_name,
+        CONCAT(ab.first_name,' ',COALESCE(ab.last_name,'')) AS accepted_by_name,
+        CONCAT(rb.first_name,' ',COALESCE(rb.last_name,'')) AS ready_to_bill_by_name,
         ai.folio AS invoice_folio, ai.total_amount AS invoice_amount, ai.status AS invoice_status
       FROM project_deliverables d
       LEFT JOIN projects p ON p.id = d.project_id
