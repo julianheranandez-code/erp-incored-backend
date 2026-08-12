@@ -700,6 +700,156 @@ router.get('/alerts', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+
+// ─── PMO RISKS ────────────────────────────────────────────────
+
+router.get('/risks', async (req, res, next) => {
+  try {
+    const { project_id, company_id, status, severity, category } = req.query;
+    if (!company_id) return res.status(400).json({ success: false, error: 'company_id_required' });
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    const cid = parseInt(company_id);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    let conditions = ['r.company_id = $1'];
+    let values = [cid];
+    let idx = 2;
+    if (project_id) {
+      const proj = await query('SELECT id FROM projects WHERE id=$1 AND company_id=$2', [parseInt(project_id), cid]);
+      if (!proj.rows[0]) return res.status(403).json({ success: false, error: 'project_company_mismatch' });
+      conditions.push(`r.project_id = $${idx++}`);
+      values.push(parseInt(project_id));
+    }
+    if (status)   { conditions.push(`r.status = $${idx++}`);   values.push(status); }
+    if (severity) { conditions.push(`r.severity = $${idx++}`); values.push(severity); }
+    if (category) { conditions.push(`r.category = $${idx++}`); values.push(category); }
+    const result = await query(`
+      SELECT r.uuid, r.title, r.description, r.category,
+        r.probability, r.impact, r.probability_score, r.impact_score,
+        r.risk_score, r.severity, r.mitigation_plan, r.status,
+        r.identified_at, r.target_resolution_date, r.resolved_at, r.notes,
+        r.project_id, r.company_id, r.created_at, r.updated_at,
+        p.code AS project_code, p.name AS project_name,
+        CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal, e.last_name,'')) AS owner_name
+      FROM project_risks r
+      LEFT JOIN projects p ON p.id = r.project_id
+      LEFT JOIN employees e ON e.id = r.owner_employee_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY r.risk_score DESC, r.created_at DESC
+    `, values);
+    const summary = {
+      total: result.rows.length,
+      critical: result.rows.filter(r => r.severity === 'critical').length,
+      high: result.rows.filter(r => r.severity === 'high').length,
+      open: result.rows.filter(r => ['identified','mitigating'].includes(r.status)).length,
+    };
+    res.json({ success: true, count: result.rows.length, summary, data: result.rows });
+  } catch(e) { next(e); }
+});
+
+// ─── PMO DELIVERABLES ─────────────────────────────────────────
+
+router.get('/deliverables', async (req, res, next) => {
+  try {
+    const { project_id, company_id, status, deliverable_type } = req.query;
+    if (!company_id) return res.status(400).json({ success: false, error: 'company_id_required' });
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    const cid = parseInt(company_id);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    let conditions = ['d.company_id = $1'];
+    let values = [cid];
+    let idx = 2;
+    if (project_id) {
+      const proj = await query('SELECT id FROM projects WHERE id=$1 AND company_id=$2', [parseInt(project_id), cid]);
+      if (!proj.rows[0]) return res.status(403).json({ success: false, error: 'project_company_mismatch' });
+      conditions.push(`d.project_id = $${idx++}`);
+      values.push(parseInt(project_id));
+    }
+    if (status)           { conditions.push(`d.status = $${idx++}`);           values.push(status); }
+    if (deliverable_type) { conditions.push(`d.deliverable_type = $${idx++}`); values.push(deliverable_type); }
+    const result = await query(`
+      SELECT d.uuid, d.title, d.description, d.deliverable_type,
+        d.due_date, d.status, d.submitted_at, d.accepted_at, d.rejected_at,
+        d.ready_to_bill_at, d.invoiced_at, d.requires_client_approval,
+        d.client_approval_status, d.client_approval_method,
+        d.client_approved_by, d.client_approved_at,
+        d.rejection_reason, d.notes,
+        d.project_id, d.company_id, d.created_at, d.updated_at,
+        p.code AS project_code, p.name AS project_name,
+        CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal, e.last_name,'')) AS owner_name,
+        CONCAT(ab.first_name,' ',COALESCE(ab.last_name_paternal, ab.last_name,'')) AS accepted_by_name,
+        CONCAT(rb.first_name,' ',COALESCE(rb.last_name_paternal, rb.last_name,'')) AS ready_to_bill_by_name,
+        ai.folio AS invoice_folio, ai.total_amount AS invoice_amount, ai.status AS invoice_status
+      FROM project_deliverables d
+      LEFT JOIN projects p ON p.id = d.project_id
+      LEFT JOIN employees e ON e.id = d.owner_employee_id
+      LEFT JOIN users ab ON ab.id = d.accepted_by
+      LEFT JOIN users rb ON rb.id = d.ready_to_bill_by
+      LEFT JOIN ar_invoices ai ON ai.deliverable_id = d.id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY d.due_date ASC NULLS LAST, d.created_at DESC
+    `, values);
+    const summary = {
+      total:         result.rows.length,
+      pending:       result.rows.filter(r => r.status === 'pending').length,
+      submitted:     result.rows.filter(r => r.status === 'submitted').length,
+      accepted:      result.rows.filter(r => r.status === 'accepted').length,
+      ready_to_bill: result.rows.filter(r => r.status === 'ready_to_bill').length,
+      invoiced:      result.rows.filter(r => r.status === 'invoiced').length,
+    };
+    res.json({ success: true, count: result.rows.length, summary, data: result.rows });
+  } catch(e) { next(e); }
+});
+
+router.get('/deliverables/:uuid/events', async (req, res, next) => {
+  try {
+    const { company_id } = req.query;
+    if (!company_id) return res.status(400).json({ success: false, error: 'company_id_required' });
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    const cid = parseInt(company_id);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    const del = await query(
+      'SELECT id FROM project_deliverables WHERE uuid=$1 AND company_id=$2',
+      [req.params.uuid, cid]
+    );
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const result = await query(`
+      SELECT de.uuid, de.event_type, de.previous_status, de.new_status,
+        de.performed_at, de.notes, de.metadata,
+        CONCAT(u.first_name,' ',COALESCE(u.last_name,'')) AS performed_by_name
+      FROM deliverable_events de
+      LEFT JOIN users u ON u.id = de.performed_by
+      WHERE de.deliverable_id = $1
+      ORDER BY de.performed_at ASC
+    `, [del.rows[0].id]);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch(e) { next(e); }
+});
+
+router.get('/deliverables/:uuid/evidence', async (req, res, next) => {
+  try {
+    const { company_id } = req.query;
+    if (!company_id) return res.status(400).json({ success: false, error: 'company_id_required' });
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    const cid = parseInt(company_id);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    const del = await query(`
+      SELECT d.id, d.uuid, d.client_approval_status, d.client_approval_method,
+        d.client_approved_by, d.client_approved_at, d.client_approval_reference,
+        d.client_approval_document_id, d.requires_client_approval,
+        da.file_name, da.file_url, da.uploaded_at
+      FROM project_deliverables d
+      LEFT JOIN document_attachments da ON da.id = d.client_approval_document_id
+      WHERE d.uuid=$1 AND d.company_id=$2
+    `, [req.params.uuid, cid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    res.json({ success: true, data: del.rows[0] });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
 
 // PUT /api/pmo/crews/:id
