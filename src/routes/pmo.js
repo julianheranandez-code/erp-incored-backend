@@ -850,6 +850,323 @@ router.get('/deliverables/:uuid/evidence', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+
+// ─── PHASE 2: RISKS CREATE/EDIT ───────────────────────────────
+
+// POST /api/pmo/risks
+router.post('/risks', async (req, res, next) => {
+  try {
+    const {
+      company_id, project_id, title, description, category = 'operational',
+      probability = 'medium', impact = 'medium', mitigation_plan,
+      owner_employee_id, status = 'identified',
+      target_resolution_date, notes
+    } = req.body;
+
+    if (!company_id || !project_id || !title)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: company_id, project_id, title' });
+
+    const cid = parseInt(company_id);
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // Validate project belongs to company
+    const proj = await query('SELECT id FROM projects WHERE id=$1 AND company_id=$2',
+      [parseInt(project_id), cid]);
+    if (!proj.rows[0])
+      return res.status(400).json({ success: false, error: 'project_company_mismatch',
+        message: 'Project does not belong to this company.' });
+
+    // Validate owner employee belongs to company
+    if (owner_employee_id) {
+      const emp = await query('SELECT id FROM employees WHERE id=$1 AND company_id=$2',
+        [parseInt(owner_employee_id), cid]);
+      if (!emp.rows[0])
+        return res.status(400).json({ success: false, error: 'employee_company_mismatch',
+          message: 'Owner employee does not belong to this company.' });
+    }
+
+    const result = await query(`
+      INSERT INTO project_risks
+        (company_id, project_id, title, description, category, probability, impact,
+         mitigation_plan, owner_employee_id, status, target_resolution_date, notes,
+         created_by, updated_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
+      RETURNING uuid, title, category, probability, impact,
+                probability_score, impact_score, risk_score, severity, status
+    `, [cid, parseInt(project_id), title, description||null, category,
+        probability, impact, mitigation_plan||null,
+        owner_employee_id ? parseInt(owner_employee_id) : null,
+        status, target_resolution_date||null, notes||null, req.user.id]);
+
+    res.status(201).json({ success: true, data: result.rows[0],
+      message: 'Risk registered.' });
+  } catch(e) { next(e); }
+});
+
+// PUT /api/pmo/risks/:uuid
+router.put('/risks/:uuid', async (req, res, next) => {
+  try {
+    const risk = await query(
+      'SELECT id, company_id, status FROM project_risks WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!risk.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = risk.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const {
+      title, description, category, probability, impact,
+      mitigation_plan, owner_employee_id, status,
+      target_resolution_date, resolved_at, notes
+    } = req.body;
+
+    // Validate owner employee if provided
+    if (owner_employee_id) {
+      const emp = await query('SELECT id FROM employees WHERE id=$1 AND company_id=$2',
+        [parseInt(owner_employee_id), cid]);
+      if (!emp.rows[0])
+        return res.status(400).json({ success: false, error: 'employee_company_mismatch' });
+    }
+
+    const result = await query(`
+      UPDATE project_risks SET
+        title = COALESCE($1, title),
+        description = COALESCE($2, description),
+        category = COALESCE($3, category),
+        probability = COALESCE($4, probability),
+        impact = COALESCE($5, impact),
+        mitigation_plan = COALESCE($6, mitigation_plan),
+        owner_employee_id = COALESCE($7, owner_employee_id),
+        status = COALESCE($8, status),
+        target_resolution_date = COALESCE($9, target_resolution_date),
+        resolved_at = COALESCE($10, resolved_at),
+        notes = COALESCE($11, notes),
+        updated_by = $12,
+        updated_at = NOW()
+      WHERE id = $13
+      RETURNING uuid, title, probability, impact,
+                probability_score, impact_score, risk_score, severity, status
+    `, [title||null, description||null, category||null,
+        probability||null, impact||null, mitigation_plan||null,
+        owner_employee_id ? parseInt(owner_employee_id) : null,
+        status||null, target_resolution_date||null,
+        resolved_at||null, notes||null,
+        req.user.id, risk.rows[0].id]);
+
+    res.json({ success: true, data: result.rows[0], message: 'Risk updated.' });
+  } catch(e) { next(e); }
+});
+
+// ─── PHASE 2: DELIVERABLES CREATE/EDIT ────────────────────────
+
+// POST /api/pmo/deliverables
+router.post('/deliverables', async (req, res, next) => {
+  try {
+    const {
+      company_id, project_id, title, description,
+      deliverable_type = 'document', due_date,
+      owner_employee_id, requires_client_approval = false, notes
+    } = req.body;
+
+    if (!company_id || !project_id || !title)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: company_id, project_id, title' });
+
+    const cid = parseInt(company_id);
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // Validate project belongs to company
+    const proj = await query('SELECT id FROM projects WHERE id=$1 AND company_id=$2',
+      [parseInt(project_id), cid]);
+    if (!proj.rows[0])
+      return res.status(400).json({ success: false, error: 'project_company_mismatch',
+        message: 'Project does not belong to this company.' });
+
+    // Validate owner employee belongs to company
+    if (owner_employee_id) {
+      const emp = await query('SELECT id FROM employees WHERE id=$1 AND company_id=$2',
+        [parseInt(owner_employee_id), cid]);
+      if (!emp.rows[0])
+        return res.status(400).json({ success: false, error: 'employee_company_mismatch',
+          message: 'Owner employee does not belong to this company.' });
+    }
+
+    const result = await withTransaction(async (client) => {
+      const ins = await client.query(`
+        INSERT INTO project_deliverables
+          (company_id, project_id, title, description, deliverable_type,
+           due_date, owner_employee_id, requires_client_approval,
+           notes, created_by, updated_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+        RETURNING id, uuid, title, status, deliverable_type
+      `, [cid, parseInt(project_id), title, description||null,
+          deliverable_type, due_date||null,
+          owner_employee_id ? parseInt(owner_employee_id) : null,
+          requires_client_approval, notes||null, req.user.id]);
+
+      // Append created event
+      await client.query(`
+        INSERT INTO deliverable_events
+          (deliverable_id, company_id, project_id, event_type,
+           previous_status, new_status, performed_by, notes)
+        VALUES ($1,$2,$3,'created',null,'pending',$4,'Deliverable created')
+      `, [ins.rows[0].id, cid, parseInt(project_id), req.user.id]);
+
+      return ins.rows[0];
+    });
+
+    res.status(201).json({ success: true, data: result, message: 'Deliverable created.' });
+  } catch(e) { next(e); }
+});
+
+// PUT /api/pmo/deliverables/:uuid
+router.put('/deliverables/:uuid', async (req, res, next) => {
+  try {
+    const del = await query(
+      'SELECT id, company_id, project_id, status FROM project_deliverables WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = del.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // Block edit on controlled statuses
+    const lockedStatuses = ['accepted','ready_to_bill','invoiced'];
+    if (lockedStatuses.includes(del.rows[0].status) && req.user.role !== 'super_admin')
+      return res.status(400).json({ success: false, error: 'locked',
+        message: `Deliverable in status '${del.rows[0].status}' cannot be edited.` });
+
+    const { title, description, deliverable_type, due_date,
+            owner_employee_id, requires_client_approval, notes } = req.body;
+
+    if (owner_employee_id) {
+      const emp = await query('SELECT id FROM employees WHERE id=$1 AND company_id=$2',
+        [parseInt(owner_employee_id), cid]);
+      if (!emp.rows[0])
+        return res.status(400).json({ success: false, error: 'employee_company_mismatch' });
+    }
+
+    const result = await query(`
+      UPDATE project_deliverables SET
+        title = COALESCE($1, title),
+        description = COALESCE($2, description),
+        deliverable_type = COALESCE($3, deliverable_type),
+        due_date = COALESCE($4, due_date),
+        owner_employee_id = COALESCE($5, owner_employee_id),
+        requires_client_approval = COALESCE($6, requires_client_approval),
+        notes = COALESCE($7, notes),
+        updated_by = $8,
+        updated_at = NOW()
+      WHERE id = $9
+      RETURNING uuid, title, status, deliverable_type, due_date
+    `, [title||null, description||null, deliverable_type||null,
+        due_date||null,
+        owner_employee_id ? parseInt(owner_employee_id) : null,
+        requires_client_approval !== undefined ? requires_client_approval : null,
+        notes||null, req.user.id, del.rows[0].id]);
+
+    res.json({ success: true, data: result.rows[0], message: 'Deliverable updated.' });
+  } catch(e) { next(e); }
+});
+
+// ─── PHASE 2: SUBMIT / REJECT ─────────────────────────────────
+
+// POST /api/pmo/deliverables/:uuid/submit
+router.post('/deliverables/:uuid/submit', async (req, res, next) => {
+  try {
+    const { notes } = req.body;
+    const del = await query(
+      'SELECT id, company_id, project_id, status FROM project_deliverables WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = del.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const allowedFromStatuses = ['pending','rejected'];
+    if (!allowedFromStatuses.includes(del.rows[0].status))
+      return res.status(400).json({ success: false, error: 'invalid_transition',
+        message: `Cannot submit from status '${del.rows[0].status}'. Allowed: pending, rejected.` });
+
+    const prevStatus = del.rows[0].status;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE project_deliverables SET
+          status = 'submitted', submitted_at = NOW(),
+          updated_by = $1, updated_at = NOW()
+        WHERE id = $2
+      `, [req.user.id, del.rows[0].id]);
+
+      await client.query(`
+        INSERT INTO deliverable_events
+          (deliverable_id, company_id, project_id, event_type,
+           previous_status, new_status, performed_by, notes)
+        VALUES ($1,$2,$3,'submitted',$4,'submitted',$5,$6)
+      `, [del.rows[0].id, cid, del.rows[0].project_id,
+          prevStatus, req.user.id, notes||null]);
+    });
+
+    res.json({ success: true, message: 'Deliverable submitted.',
+      data: { status: 'submitted', submitted_at: new Date() } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/pmo/deliverables/:uuid/reject
+router.post('/deliverables/:uuid/reject', async (req, res, next) => {
+  try {
+    const { reason, notes } = req.body;
+    if (!reason) return res.status(400).json({ success: false, error: 'validation_error',
+      message: 'rejection_reason is required.' });
+
+    const del = await query(
+      'SELECT id, company_id, project_id, status FROM project_deliverables WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = del.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    if (del.rows[0].status !== 'submitted')
+      return res.status(400).json({ success: false, error: 'invalid_transition',
+        message: `Cannot reject from status '${del.rows[0].status}'. Only submitted deliverables can be rejected.` });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE project_deliverables SET
+          status = 'rejected', rejected_at = NOW(),
+          rejection_reason = $1, updated_by = $2, updated_at = NOW()
+        WHERE id = $3
+      `, [reason, req.user.id, del.rows[0].id]);
+
+      await client.query(`
+        INSERT INTO deliverable_events
+          (deliverable_id, company_id, project_id, event_type,
+           previous_status, new_status, performed_by, notes, metadata)
+        VALUES ($1,$2,$3,'rejected','submitted','rejected',$4,$5,$6)
+      `, [del.rows[0].id, cid, del.rows[0].project_id,
+          req.user.id, notes||null,
+          JSON.stringify({ rejection_reason: reason })]);
+    });
+
+    res.json({ success: true, message: 'Deliverable rejected — can be resubmitted.',
+      data: { status: 'rejected', rejection_reason: reason } });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
 
 // PUT /api/pmo/crews/:id
