@@ -1167,6 +1167,94 @@ router.post('/deliverables/:uuid/reject', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+
+// ─── PHASE 3: ACCEPT / READY-TO-BILL ─────────────────────────
+
+// POST /api/pmo/deliverables/:uuid/accept
+router.post('/deliverables/:uuid/accept', async (req, res, next) => {
+  try {
+    const { notes } = req.body;
+    const del = await query(
+      'SELECT id, company_id, project_id, status FROM project_deliverables WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = del.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    if (del.rows[0].status !== 'submitted')
+      return res.status(400).json({ success: false, error: 'invalid_transition',
+        message: `Cannot accept from status '${del.rows[0].status}'. Only submitted deliverables can be accepted.` });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE project_deliverables SET
+          status = 'accepted', accepted_at = NOW(),
+          accepted_by = $1, updated_by = $1, updated_at = NOW()
+        WHERE id = $2
+      `, [req.user.id, del.rows[0].id]);
+
+      await client.query(`
+        INSERT INTO deliverable_events
+          (deliverable_id, company_id, project_id, event_type,
+           previous_status, new_status, performed_by, notes)
+        VALUES ($1,$2,$3,'accepted','submitted','accepted',$4,$5)
+      `, [del.rows[0].id, cid, del.rows[0].project_id, req.user.id, notes||null]);
+    });
+
+    res.json({ success: true, message: 'Deliverable accepted.',
+      data: { status: 'accepted', accepted_at: new Date() } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/pmo/deliverables/:uuid/ready-to-bill
+router.post('/deliverables/:uuid/ready-to-bill', async (req, res, next) => {
+  try {
+    const { notes } = req.body;
+    const del = await query(
+      'SELECT id, company_id, project_id, status FROM project_deliverables WHERE uuid=$1',
+      [req.params.uuid]);
+    if (!del.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = del.rows[0].company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    if (del.rows[0].status !== 'accepted')
+      return res.status(400).json({ success: false, error: 'invalid_transition',
+        message: `Cannot mark ready-to-bill from status '${del.rows[0].status}'. Only accepted deliverables can be marked ready to bill.` });
+
+    // Validate no existing invoice linked
+    const existingInv = await query(
+      'SELECT id FROM ar_invoices WHERE deliverable_id=$1', [del.rows[0].id]);
+    if (existingInv.rows[0])
+      return res.status(400).json({ success: false, error: 'already_invoiced',
+        message: 'Deliverable is already linked to an AR Invoice.' });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE project_deliverables SET
+          status = 'ready_to_bill', ready_to_bill_at = NOW(),
+          ready_to_bill_by = $1, updated_by = $1, updated_at = NOW()
+        WHERE id = $2
+      `, [req.user.id, del.rows[0].id]);
+
+      await client.query(`
+        INSERT INTO deliverable_events
+          (deliverable_id, company_id, project_id, event_type,
+           previous_status, new_status, performed_by, notes)
+        VALUES ($1,$2,$3,'ready_to_bill','accepted','ready_to_bill',$4,$5)
+      `, [del.rows[0].id, cid, del.rows[0].project_id, req.user.id, notes||null]);
+    });
+
+    res.json({ success: true, message: 'Deliverable marked as ready to bill.',
+      data: { status: 'ready_to_bill', ready_to_bill_at: new Date() } });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
 
 // PUT /api/pmo/crews/:id

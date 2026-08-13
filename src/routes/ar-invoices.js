@@ -551,6 +551,36 @@ router.put('/:id', async (req, res, next) => {
     if (existing.rows[0].status === 'approved')
       return res.status(400).json({ success: false, error: 'locked', message: 'Invoice aprobada no puede editarse.' });
 
+    // Handle deliverable linkage separately (transactional)
+    const deliverableId = req.body.deliverable_id !== undefined ? req.body.deliverable_id : undefined;
+
+    if (deliverableId) {
+      // Validate deliverable exists and belongs to same company
+      const delCheck = await query(
+        'SELECT id, company_id, project_id, status FROM project_deliverables WHERE id=$1',
+        [parseInt(deliverableId)]);
+      if (!delCheck.rows[0])
+        return res.status(404).json({ success: false, error: 'deliverable_not_found' });
+      if (delCheck.rows[0].company_id !== existing.rows[0].company_id)
+        return res.status(400).json({ success: false, error: 'company_mismatch',
+          message: 'Deliverable and invoice must belong to the same company.' });
+      if (delCheck.rows[0].status !== 'ready_to_bill')
+        return res.status(400).json({ success: false, error: 'deliverable_not_ready',
+          message: 'Deliverable must be in ready_to_bill status to link an invoice.' });
+      // Validate project match if both have project_id
+      if (existing.rows[0].project_id && delCheck.rows[0].project_id &&
+          existing.rows[0].project_id !== delCheck.rows[0].project_id)
+        return res.status(400).json({ success: false, error: 'project_mismatch',
+          message: 'Invoice and deliverable must belong to the same project.' });
+      // Validate no existing invoice linked (duplicate prevention)
+      const dupCheck = await query(
+        'SELECT id FROM ar_invoices WHERE deliverable_id=$1 AND id!=$2',
+        [parseInt(deliverableId), id]);
+      if (dupCheck.rows[0])
+        return res.status(409).json({ success: false, error: 'duplicate_invoice_linkage',
+          message: 'This deliverable is already linked to another AR Invoice.' });
+    }
+
     const allowed = [
       'client_id','project_id','client_po_id','description','notes',
       'subtotal','tax_percent','tax_amount','total_amount','currency',
@@ -566,10 +596,42 @@ router.put('/:id', async (req, res, next) => {
     for (const key of allowed) {
       if (key in req.body) { fields.push(`${key} = $${idx++}`); params.push(req.body[key]); }
     }
-    if (!fields.length) return res.status(400).json({ success: false, error: 'no_fields' });
+    if (!fields.length && deliverableId === undefined)
+      return res.status(400).json({ success: false, error: 'no_fields' });
     params.push(id);
-    const result = await query(
-      `UPDATE ar_invoices SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${idx} RETURNING *`, params);
+    const result = await withTransaction(async (client) => {
+      let invoiceResult;
+      if (fields.length) {
+        invoiceResult = await client.query(
+          `UPDATE ar_invoices SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${idx} RETURNING *`, params);
+      } else {
+        invoiceResult = await client.query('SELECT * FROM ar_invoices WHERE id=$1', [id]);
+      }
+
+      // Handle deliverable linkage transactionally
+      if (deliverableId) {
+        await client.query(
+          'UPDATE ar_invoices SET deliverable_id=$1, updated_at=NOW() WHERE id=$2',
+          [parseInt(deliverableId), id]);
+        await client.query(`
+          UPDATE project_deliverables SET
+            status='invoiced', invoiced_at=NOW(), updated_at=NOW()
+          WHERE id=$1
+        `, [parseInt(deliverableId)]);
+        await client.query(`
+          INSERT INTO deliverable_events
+            (deliverable_id, company_id, project_id, event_type,
+             previous_status, new_status, performed_by, notes, metadata)
+          VALUES ($1,$2,$3,'invoiced','ready_to_bill','invoiced',$4,$5,$6)
+        `, [parseInt(deliverableId),
+            existing.rows[0].company_id,
+            existing.rows[0].project_id,
+            req.user.id, 'Linked to AR Invoice',
+            JSON.stringify({ ar_invoice_id: id })]);
+      }
+
+      return invoiceResult;
+    });
 
     // Update items if provided
     if (req.body.items) {
