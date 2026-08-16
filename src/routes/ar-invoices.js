@@ -60,11 +60,13 @@ router.get('/', async (req, res, next) => {
         SELECT i.*,
           c.name AS client_name, c.rfc AS client_rfc,
           p.name AS project_name, p.code AS project_code,
-          cpo.po_number AS client_po_number, cpo.remaining_amount AS po_remaining
+          cpo.po_number AS client_po_number, cpo.remaining_amount AS po_remaining,
+          CONCAT(u.first_name,' ',COALESCE(u.last_name,'')) AS created_by_name
         FROM ar_invoices i
         LEFT JOIN clients c    ON c.id = i.client_id
         LEFT JOIN projects p   ON p.id = i.project_id
         LEFT JOIN client_purchase_orders cpo ON cpo.id = i.client_po_id
+        LEFT JOIN users u ON u.id = i.created_by
         ${where}
         ORDER BY i.due_date ASC, i.issue_date DESC
         LIMIT $${idx} OFFSET $${idx+1}
