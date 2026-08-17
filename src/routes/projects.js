@@ -309,6 +309,346 @@ router.post('/:id/team',
   }
 );
 
+
+// ─── PROJECT CLOSE WORKFLOW ───────────────────────────────────
+
+// GET /api/projects/:id/close-readiness
+// Returns validation results before requesting close
+router.get('/:id/close-readiness', async (req, res, next) => {
+  try {
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = project.company_id;
+    const pid = project.id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const [
+      deliverables, arInvoices, tasks, risks,
+      clientPOs, internalPOs
+    ] = await Promise.all([
+      // Deliverables not invoiced
+      query(`SELECT uuid, title, status FROM project_deliverables
+             WHERE project_id=$1 AND status != 'invoiced'`, [pid]),
+      // AR Invoices with outstanding balance
+      query(`SELECT folio, outstanding_balance, status FROM ar_invoices
+             WHERE project_id=$1 AND outstanding_balance > 0
+             AND status NOT IN ('cancelled','rejected')`, [pid]),
+      // Tasks not completed/cancelled
+      query(`SELECT id, task_name, status FROM tasks
+             WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
+      // Risks still open
+      query(`SELECT uuid, title, status FROM project_risks
+             WHERE project_id=$1 AND status IN ('identified','mitigating')`, [pid]),
+      // Client POs with remaining balance
+      query(`SELECT id, po_number, total_amount, remaining_amount,
+               ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
+             FROM client_purchase_orders
+             WHERE project_id=$1 AND remaining_amount > 0`, [pid]),
+      // Internal POs with remaining balance
+      query(`SELECT id, folio, total_amount, remaining_amount,
+               ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
+             FROM internal_purchase_orders
+             WHERE project_id=$1 AND remaining_amount > 0`, [pid])
+    ]);
+
+    // Evaluate blockers vs warnings
+    const blockers = [];
+    const warnings = [];
+
+    // Deliverables — hard block
+    if (deliverables.rows.length > 0)
+      blockers.push({ type: 'deliverables_pending',
+        message: `${deliverables.rows.length} deliverable(s) no están facturados.`,
+        items: deliverables.rows });
+
+    // AR Invoices — hard block
+    if (arInvoices.rows.length > 0)
+      blockers.push({ type: 'ar_invoices_unpaid',
+        message: `${arInvoices.rows.length} factura(s) AR con saldo pendiente.`,
+        items: arInvoices.rows });
+
+    // Tasks — hard block
+    if (tasks.rows.length > 0)
+      blockers.push({ type: 'tasks_open',
+        message: `${tasks.rows.length} tarea(s) PMO sin completar.`,
+        items: tasks.rows });
+
+    // Risks — hard block
+    if (risks.rows.length > 0)
+      blockers.push({ type: 'risks_open',
+        message: `${risks.rows.length} riesgo(s) activos sin resolver.`,
+        items: risks.rows });
+
+    // Client POs — 10% tolerance
+    for (const po of clientPOs.rows) {
+      if (parseFloat(po.remaining_pct) > 10)
+        blockers.push({ type: 'client_po_balance',
+          message: `PO Cliente ${po.po_number}: ${po.remaining_pct}% sin consumir (límite 10%).`,
+          items: [po] });
+      else if (parseFloat(po.remaining_pct) > 0)
+        warnings.push({ type: 'client_po_balance_warning',
+          message: `PO Cliente ${po.po_number}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          items: [po] });
+    }
+
+    // Internal POs — 15% tolerance
+    for (const po of internalPOs.rows) {
+      if (parseFloat(po.remaining_pct) > 15)
+        blockers.push({ type: 'internal_po_balance',
+          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir (límite 15%).`,
+          items: [po] });
+      else if (parseFloat(po.remaining_pct) > 0)
+        warnings.push({ type: 'internal_po_balance_warning',
+          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          items: [po] });
+    }
+
+    const canRequestClose = blockers.length === 0;
+    const requiresJustification = warnings.length > 0;
+
+    res.json({ success: true, data: {
+      can_request_close: canRequestClose,
+      requires_justification: requiresJustification,
+      blockers,
+      warnings,
+      summary: {
+        total_blockers: blockers.length,
+        total_warnings: warnings.length,
+        deliverables_pending: deliverables.rows.length,
+        ar_invoices_unpaid: arInvoices.rows.length,
+        tasks_open: tasks.rows.length,
+        risks_open: risks.rows.length
+      }
+    }});
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/request-close
+// PMO Director requests project closure
+router.post('/:id/request-close', async (req, res, next) => {
+  try {
+    const { justification, notes } = req.body;
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = project.company_id;
+    const pid = project.id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    if (project.approval_status === 'pending_approval' && project.close_requested_at)
+      return res.status(400).json({ success: false, error: 'close_already_requested',
+        message: 'Ya existe una solicitud de cierre pendiente.' });
+
+    // Re-run readiness check
+    const [deliverables, arInvoices, tasks, risks] = await Promise.all([
+      query(`SELECT COUNT(*) as cnt FROM project_deliverables
+             WHERE project_id=$1 AND status != 'invoiced'`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM ar_invoices
+             WHERE project_id=$1 AND outstanding_balance > 0
+             AND status NOT IN ('cancelled','rejected')`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM tasks
+             WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM project_risks
+             WHERE project_id=$1 AND status IN ('identified','mitigating')`, [pid])
+    ]);
+
+    const blockerCount =
+      parseInt(deliverables.rows[0].cnt) +
+      parseInt(arInvoices.rows[0].cnt) +
+      parseInt(tasks.rows[0].cnt) +
+      parseInt(risks.rows[0].cnt);
+
+    if (blockerCount > 0)
+      return res.status(400).json({ success: false, error: 'blockers_exist',
+        message: `No se puede solicitar cierre: ${blockerCount} item(s) bloqueadores pendientes. Use GET /api/projects/${pid}/close-readiness para ver el detalle.` });
+
+    // Get approval chain
+    const approvalPolicy = await getCompanyApprovalPolicy(cid);
+    const chain = [
+      { level: 1, role: 'accounting_manager' },
+      { level: 2, role: 'finance' }
+    ];
+    const { resolved, missing } = await resolveApprovers(cid, chain);
+    if (missing.length > 0)
+      return res.status(400).json({ success: false, error: 'missing_approvers', missing });
+
+    let approvalRequestId;
+    await withTransaction(async (client) => {
+      const arResult = await client.query(`
+        INSERT INTO treasury_approval_requests
+          (company_id, approval_type, entity_type, entity_id, amount, currency,
+           status, requested_by, current_level, final_level, notes)
+        VALUES ($1,'PROJECT_CLOSE','PROJECT',$2,0,$3,'pending',$4,1,$5,$6)
+        RETURNING id
+      `, [cid, String(pid), project.currency || 'MXN', req.user.id,
+          resolved.length,
+          `Solicitud de cierre: ${project.code} — ${project.name}${justification ? ' | Justificación: ' + justification : ''}`]);
+
+      approvalRequestId = arResult.rows[0].id;
+
+      for (const step of resolved) {
+        await client.query(`
+          INSERT INTO treasury_approval_steps
+            (request_id, level_number, approver_role, approver_user_id, status)
+          VALUES ($1,$2,$3,$4,'pending')
+        `, [approvalRequestId, step.level, step.role, step.user_id]);
+      }
+
+      await client.query(`
+        UPDATE projects SET
+          close_requested_at = NOW(),
+          close_requested_by = $1,
+          close_justification = $2,
+          close_approval_request_id = $3,
+          updated_at = NOW()
+        WHERE id = $4
+      `, [req.user.id, justification||null, approvalRequestId, pid]);
+    });
+
+    writeAudit({ userId: req.user.id, action: 'project_close_requested',
+      entityType: 'projects', entityId: String(pid),
+      companyId: cid, newValues: { approval_request_id: approvalRequestId },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    res.json({ success: true, message: 'Solicitud de cierre enviada a aprobación.',
+      data: { approval_request_id: approvalRequestId, levels: resolved.length } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/approve-close
+// Accounting/Finance approves project closure
+router.post('/:id/approve-close', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    if (!project.close_approval_request_id)
+      return res.status(400).json({ success: false, error: 'no_close_request',
+        message: 'No hay solicitud de cierre pendiente.' });
+
+    const cid = project.company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const ar = await query(
+      'SELECT * FROM treasury_approval_requests WHERE id=$1',
+      [project.close_approval_request_id]);
+    if (!ar.rows[0]) return res.status(404).json({ success: false, error: 'approval_not_found' });
+
+    const currentLevel = ar.rows[0].current_level;
+    const finalLevel = ar.rows[0].final_level;
+
+    const step = await query(`
+      SELECT * FROM treasury_approval_steps
+      WHERE request_id=$1 AND level_number=$2 AND status='pending'
+    `, [project.close_approval_request_id, currentLevel]);
+
+    if (!step.rows[0])
+      return res.status(400).json({ success: false, error: 'no_pending_step' });
+
+    if (step.rows[0].approver_user_id !== req.user.id && req.user.role !== 'super_admin')
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'No tienes autorización para aprobar este nivel.' });
+
+    let isFullyApproved = false;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_steps SET status='approved',
+          approved_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE id=$2
+      `, [comments||null, step.rows[0].id]);
+
+      if (currentLevel >= finalLevel) {
+        isFullyApproved = true;
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='approved',
+            current_level=$1, updated_at=NOW()
+          WHERE id=$2
+        `, [currentLevel, project.close_approval_request_id]);
+
+        await client.query(`
+          UPDATE projects SET status='completed',
+            end_date_real=CURRENT_DATE,
+            close_approved_at=NOW(),
+            close_approved_by=$1,
+            updated_at=NOW()
+          WHERE id=$2
+        `, [req.user.id, project.id]);
+      } else {
+        await client.query(`
+          UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW()
+          WHERE id=$2
+        `, [currentLevel + 1, project.close_approval_request_id]);
+      }
+    });
+
+    writeAudit({ userId: req.user.id, action: 'project_close_approved',
+      entityType: 'projects', entityId: String(project.id),
+      companyId: cid, newValues: { level: currentLevel, fully_approved: isFullyApproved },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    res.json({ success: true,
+      message: isFullyApproved
+        ? 'Proyecto cerrado y marcado como completado.'
+        : `Nivel ${currentLevel} aprobado. Pendiente nivel ${currentLevel + 1}.`,
+      data: { fully_approved: isFullyApproved, level_approved: currentLevel } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/reject-close
+router.post('/:id/reject-close', async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    if (!reason) return res.status(400).json({ success: false, error: 'validation_error',
+      message: 'Se requiere motivo de rechazo.' });
+
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    if (!project.close_approval_request_id)
+      return res.status(400).json({ success: false, error: 'no_close_request' });
+
+    const cid = project.company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_requests SET status='rejected', updated_at=NOW()
+        WHERE id=$1
+      `, [project.close_approval_request_id]);
+
+      await client.query(`
+        UPDATE treasury_approval_steps SET status='rejected',
+          rejected_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE request_id=$2 AND status='pending'
+      `, [reason, project.close_approval_request_id]);
+
+      await client.query(`
+        UPDATE projects SET
+          close_requested_at=NULL,
+          close_requested_by=NULL,
+          close_justification=NULL,
+          close_approval_request_id=NULL,
+          updated_at=NOW()
+        WHERE id=$1
+      `, [project.id]);
+    });
+
+    res.json({ success: true, message: 'Solicitud de cierre rechazada — proyecto vuelve a executing.',
+      data: { reason } });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
 
 // ─── PROJECT APPROVAL ENDPOINTS ───────────────────────────────
@@ -475,6 +815,346 @@ router.post('/:id/reject', async (req, res, next) => {
     res.json({ success: true, message: 'Proyecto rechazado — vuelve a draft.',
       data: { reason } });
   } catch (e) { next(e); }
+});
+
+
+// ─── PROJECT CLOSE WORKFLOW ───────────────────────────────────
+
+// GET /api/projects/:id/close-readiness
+// Returns validation results before requesting close
+router.get('/:id/close-readiness', async (req, res, next) => {
+  try {
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = project.company_id;
+    const pid = project.id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const [
+      deliverables, arInvoices, tasks, risks,
+      clientPOs, internalPOs
+    ] = await Promise.all([
+      // Deliverables not invoiced
+      query(`SELECT uuid, title, status FROM project_deliverables
+             WHERE project_id=$1 AND status != 'invoiced'`, [pid]),
+      // AR Invoices with outstanding balance
+      query(`SELECT folio, outstanding_balance, status FROM ar_invoices
+             WHERE project_id=$1 AND outstanding_balance > 0
+             AND status NOT IN ('cancelled','rejected')`, [pid]),
+      // Tasks not completed/cancelled
+      query(`SELECT id, task_name, status FROM tasks
+             WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
+      // Risks still open
+      query(`SELECT uuid, title, status FROM project_risks
+             WHERE project_id=$1 AND status IN ('identified','mitigating')`, [pid]),
+      // Client POs with remaining balance
+      query(`SELECT id, po_number, total_amount, remaining_amount,
+               ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
+             FROM client_purchase_orders
+             WHERE project_id=$1 AND remaining_amount > 0`, [pid]),
+      // Internal POs with remaining balance
+      query(`SELECT id, folio, total_amount, remaining_amount,
+               ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
+             FROM internal_purchase_orders
+             WHERE project_id=$1 AND remaining_amount > 0`, [pid])
+    ]);
+
+    // Evaluate blockers vs warnings
+    const blockers = [];
+    const warnings = [];
+
+    // Deliverables — hard block
+    if (deliverables.rows.length > 0)
+      blockers.push({ type: 'deliverables_pending',
+        message: `${deliverables.rows.length} deliverable(s) no están facturados.`,
+        items: deliverables.rows });
+
+    // AR Invoices — hard block
+    if (arInvoices.rows.length > 0)
+      blockers.push({ type: 'ar_invoices_unpaid',
+        message: `${arInvoices.rows.length} factura(s) AR con saldo pendiente.`,
+        items: arInvoices.rows });
+
+    // Tasks — hard block
+    if (tasks.rows.length > 0)
+      blockers.push({ type: 'tasks_open',
+        message: `${tasks.rows.length} tarea(s) PMO sin completar.`,
+        items: tasks.rows });
+
+    // Risks — hard block
+    if (risks.rows.length > 0)
+      blockers.push({ type: 'risks_open',
+        message: `${risks.rows.length} riesgo(s) activos sin resolver.`,
+        items: risks.rows });
+
+    // Client POs — 10% tolerance
+    for (const po of clientPOs.rows) {
+      if (parseFloat(po.remaining_pct) > 10)
+        blockers.push({ type: 'client_po_balance',
+          message: `PO Cliente ${po.po_number}: ${po.remaining_pct}% sin consumir (límite 10%).`,
+          items: [po] });
+      else if (parseFloat(po.remaining_pct) > 0)
+        warnings.push({ type: 'client_po_balance_warning',
+          message: `PO Cliente ${po.po_number}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          items: [po] });
+    }
+
+    // Internal POs — 15% tolerance
+    for (const po of internalPOs.rows) {
+      if (parseFloat(po.remaining_pct) > 15)
+        blockers.push({ type: 'internal_po_balance',
+          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir (límite 15%).`,
+          items: [po] });
+      else if (parseFloat(po.remaining_pct) > 0)
+        warnings.push({ type: 'internal_po_balance_warning',
+          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          items: [po] });
+    }
+
+    const canRequestClose = blockers.length === 0;
+    const requiresJustification = warnings.length > 0;
+
+    res.json({ success: true, data: {
+      can_request_close: canRequestClose,
+      requires_justification: requiresJustification,
+      blockers,
+      warnings,
+      summary: {
+        total_blockers: blockers.length,
+        total_warnings: warnings.length,
+        deliverables_pending: deliverables.rows.length,
+        ar_invoices_unpaid: arInvoices.rows.length,
+        tasks_open: tasks.rows.length,
+        risks_open: risks.rows.length
+      }
+    }});
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/request-close
+// PMO Director requests project closure
+router.post('/:id/request-close', async (req, res, next) => {
+  try {
+    const { justification, notes } = req.body;
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const cid = project.company_id;
+    const pid = project.id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    if (project.approval_status === 'pending_approval' && project.close_requested_at)
+      return res.status(400).json({ success: false, error: 'close_already_requested',
+        message: 'Ya existe una solicitud de cierre pendiente.' });
+
+    // Re-run readiness check
+    const [deliverables, arInvoices, tasks, risks] = await Promise.all([
+      query(`SELECT COUNT(*) as cnt FROM project_deliverables
+             WHERE project_id=$1 AND status != 'invoiced'`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM ar_invoices
+             WHERE project_id=$1 AND outstanding_balance > 0
+             AND status NOT IN ('cancelled','rejected')`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM tasks
+             WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
+      query(`SELECT COUNT(*) as cnt FROM project_risks
+             WHERE project_id=$1 AND status IN ('identified','mitigating')`, [pid])
+    ]);
+
+    const blockerCount =
+      parseInt(deliverables.rows[0].cnt) +
+      parseInt(arInvoices.rows[0].cnt) +
+      parseInt(tasks.rows[0].cnt) +
+      parseInt(risks.rows[0].cnt);
+
+    if (blockerCount > 0)
+      return res.status(400).json({ success: false, error: 'blockers_exist',
+        message: `No se puede solicitar cierre: ${blockerCount} item(s) bloqueadores pendientes. Use GET /api/projects/${pid}/close-readiness para ver el detalle.` });
+
+    // Get approval chain
+    const approvalPolicy = await getCompanyApprovalPolicy(cid);
+    const chain = [
+      { level: 1, role: 'accounting_manager' },
+      { level: 2, role: 'finance' }
+    ];
+    const { resolved, missing } = await resolveApprovers(cid, chain);
+    if (missing.length > 0)
+      return res.status(400).json({ success: false, error: 'missing_approvers', missing });
+
+    let approvalRequestId;
+    await withTransaction(async (client) => {
+      const arResult = await client.query(`
+        INSERT INTO treasury_approval_requests
+          (company_id, approval_type, entity_type, entity_id, amount, currency,
+           status, requested_by, current_level, final_level, notes)
+        VALUES ($1,'PROJECT_CLOSE','PROJECT',$2,0,$3,'pending',$4,1,$5,$6)
+        RETURNING id
+      `, [cid, String(pid), project.currency || 'MXN', req.user.id,
+          resolved.length,
+          `Solicitud de cierre: ${project.code} — ${project.name}${justification ? ' | Justificación: ' + justification : ''}`]);
+
+      approvalRequestId = arResult.rows[0].id;
+
+      for (const step of resolved) {
+        await client.query(`
+          INSERT INTO treasury_approval_steps
+            (request_id, level_number, approver_role, approver_user_id, status)
+          VALUES ($1,$2,$3,$4,'pending')
+        `, [approvalRequestId, step.level, step.role, step.user_id]);
+      }
+
+      await client.query(`
+        UPDATE projects SET
+          close_requested_at = NOW(),
+          close_requested_by = $1,
+          close_justification = $2,
+          close_approval_request_id = $3,
+          updated_at = NOW()
+        WHERE id = $4
+      `, [req.user.id, justification||null, approvalRequestId, pid]);
+    });
+
+    writeAudit({ userId: req.user.id, action: 'project_close_requested',
+      entityType: 'projects', entityId: String(pid),
+      companyId: cid, newValues: { approval_request_id: approvalRequestId },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    res.json({ success: true, message: 'Solicitud de cierre enviada a aprobación.',
+      data: { approval_request_id: approvalRequestId, levels: resolved.length } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/approve-close
+// Accounting/Finance approves project closure
+router.post('/:id/approve-close', async (req, res, next) => {
+  try {
+    const { comments } = req.body;
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    if (!project.close_approval_request_id)
+      return res.status(400).json({ success: false, error: 'no_close_request',
+        message: 'No hay solicitud de cierre pendiente.' });
+
+    const cid = project.company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const ar = await query(
+      'SELECT * FROM treasury_approval_requests WHERE id=$1',
+      [project.close_approval_request_id]);
+    if (!ar.rows[0]) return res.status(404).json({ success: false, error: 'approval_not_found' });
+
+    const currentLevel = ar.rows[0].current_level;
+    const finalLevel = ar.rows[0].final_level;
+
+    const step = await query(`
+      SELECT * FROM treasury_approval_steps
+      WHERE request_id=$1 AND level_number=$2 AND status='pending'
+    `, [project.close_approval_request_id, currentLevel]);
+
+    if (!step.rows[0])
+      return res.status(400).json({ success: false, error: 'no_pending_step' });
+
+    if (step.rows[0].approver_user_id !== req.user.id && req.user.role !== 'super_admin')
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'No tienes autorización para aprobar este nivel.' });
+
+    let isFullyApproved = false;
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_steps SET status='approved',
+          approved_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE id=$2
+      `, [comments||null, step.rows[0].id]);
+
+      if (currentLevel >= finalLevel) {
+        isFullyApproved = true;
+        await client.query(`
+          UPDATE treasury_approval_requests SET status='approved',
+            current_level=$1, updated_at=NOW()
+          WHERE id=$2
+        `, [currentLevel, project.close_approval_request_id]);
+
+        await client.query(`
+          UPDATE projects SET status='completed',
+            end_date_real=CURRENT_DATE,
+            close_approved_at=NOW(),
+            close_approved_by=$1,
+            updated_at=NOW()
+          WHERE id=$2
+        `, [req.user.id, project.id]);
+      } else {
+        await client.query(`
+          UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW()
+          WHERE id=$2
+        `, [currentLevel + 1, project.close_approval_request_id]);
+      }
+    });
+
+    writeAudit({ userId: req.user.id, action: 'project_close_approved',
+      entityType: 'projects', entityId: String(project.id),
+      companyId: cid, newValues: { level: currentLevel, fully_approved: isFullyApproved },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    res.json({ success: true,
+      message: isFullyApproved
+        ? 'Proyecto cerrado y marcado como completado.'
+        : `Nivel ${currentLevel} aprobado. Pendiente nivel ${currentLevel + 1}.`,
+      data: { fully_approved: isFullyApproved, level_approved: currentLevel } });
+  } catch(e) { next(e); }
+});
+
+// POST /api/projects/:id/reject-close
+router.post('/:id/reject-close', async (req, res, next) => {
+  try {
+    const { reason } = req.body;
+    if (!reason) return res.status(400).json({ success: false, error: 'validation_error',
+      message: 'Se requiere motivo de rechazo.' });
+
+    const project = await Project.findById(parseInt(req.params.id));
+    if (!project) return res.status(404).json({ success: false, error: 'not_found' });
+
+    if (!project.close_approval_request_id)
+      return res.status(400).json({ success: false, error: 'no_close_request' });
+
+    const cid = project.company_id;
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(cid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE treasury_approval_requests SET status='rejected', updated_at=NOW()
+        WHERE id=$1
+      `, [project.close_approval_request_id]);
+
+      await client.query(`
+        UPDATE treasury_approval_steps SET status='rejected',
+          rejected_at=NOW(), comments=$1, updated_at=NOW()
+        WHERE request_id=$2 AND status='pending'
+      `, [reason, project.close_approval_request_id]);
+
+      await client.query(`
+        UPDATE projects SET
+          close_requested_at=NULL,
+          close_requested_by=NULL,
+          close_justification=NULL,
+          close_approval_request_id=NULL,
+          updated_at=NOW()
+        WHERE id=$1
+      `, [project.id]);
+    });
+
+    res.json({ success: true, message: 'Solicitud de cierre rechazada — proyecto vuelve a executing.',
+      data: { reason } });
+  } catch(e) { next(e); }
 });
 
 module.exports = router;
