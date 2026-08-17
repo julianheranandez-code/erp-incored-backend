@@ -161,24 +161,20 @@ router.post('/tasks', async (req, res, next) => {
     const result = await query(`
       INSERT INTO project_tasks (
         project_id, company_id, milestone_id,
-        name, task_name, description, category,
+        name, task_name, description,
         assigned_user_id, assigned_crew_id,
         priority, status,
-        planned_start_date, planned_end_date,
-        estimated_hours, client_visible, location, notes, created_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+        planned_start_date, planned_end_date
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       RETURNING *
     `, [
       parseInt(project_id), parseInt(company_id),
       milestone_id ? parseInt(milestone_id) : null,
-      task_name, task_name, description || null, category || null,
+      task_name, task_name, description || null,
       assigned_user_id || null,
       assigned_crew_id ? parseInt(assigned_crew_id) : null,
       priority, status,
-      planned_start_date || null, planned_end_date || null,
-      estimated_hours ? parseFloat(estimated_hours) : null,
-      client_visible, location || null, notes || null,
-      req.user.id
+      planned_start_date || null, planned_end_date || null
     ]);
 
     logger.info(`[PMO] Task created id=${result.rows[0].id} in ${Date.now()-startTime}ms`);
