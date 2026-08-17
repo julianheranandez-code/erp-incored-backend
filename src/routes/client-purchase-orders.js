@@ -131,12 +131,13 @@ router.get('/:id/close-readiness', async (req, res, next) => {
       return res.status(403).json({ success: false, error: 'forbidden' });
 
     const [projects, arInvoices, deliverables] = await Promise.all([
-      query(`SELECT id, name, code, status FROM projects
-             WHERE client_po_id=$1 AND status NOT IN ('completed','cancelled')`, [po.id]),
+      query(`SELECT DISTINCT p.id, p.name, p.code, p.status FROM projects p
+             JOIN ar_invoices ai ON ai.project_id = p.id
+             WHERE ai.client_po_id=$1 AND p.status NOT IN ('completed','cancelled')`, [po.id]),
       query(`SELECT folio, outstanding_balance, status FROM ar_invoices
              WHERE client_po_id=$1 AND outstanding_balance > 0
              AND status NOT IN ('cancelled','rejected')`, [po.id]),
-      query(`SELECT uuid, title, status FROM project_deliverables d
+      query(`SELECT d.uuid, d.title, d.status FROM project_deliverables d
              JOIN ar_invoices ai ON ai.deliverable_id = d.id
              WHERE ai.client_po_id=$1 AND d.status != 'invoiced'`, [po.id])
     ]);
@@ -206,7 +207,7 @@ router.post('/:id/request-close', async (req, res, next) => {
 
     // Run readiness check
     const [projects, arInvoices] = await Promise.all([
-      query(`SELECT COUNT(*) as cnt FROM projects WHERE client_po_id=$1 AND status NOT IN ('completed','cancelled')`, [po.id]),
+      query(`SELECT COUNT(DISTINCT p.id) as cnt FROM projects p JOIN ar_invoices ai ON ai.project_id = p.id WHERE ai.client_po_id=$1 AND p.status NOT IN ('completed','cancelled')`, [po.id]),
       query(`SELECT COUNT(*) as cnt FROM ar_invoices WHERE client_po_id=$1 AND outstanding_balance > 0 AND status NOT IN ('cancelled','rejected')`, [po.id])
     ]);
 
