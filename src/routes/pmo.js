@@ -153,7 +153,8 @@ router.post('/tasks', async (req, res, next) => {
       });
     }
 
-    if (req.user.role !== 'admin' && parseInt(company_id) !== parseInt(req.user.company_id)) {
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.map(Number).includes(parseInt(company_id))) {
       return res.status(403).json({ success: false, error: 'forbidden', message: 'Company access denied.' });
     }
 
