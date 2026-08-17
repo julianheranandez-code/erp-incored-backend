@@ -337,7 +337,7 @@ router.get('/:id/close-readiness', async (req, res, next) => {
              WHERE project_id=$1 AND outstanding_balance > 0
              AND status NOT IN ('cancelled','rejected')`, [pid]),
       // Tasks not completed/cancelled
-      query(`SELECT id, task_name, status FROM tasks
+      query(`SELECT id, title, status FROM tasks
              WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
       // Risks still open
       query(`SELECT uuid, title, status FROM project_risks
@@ -348,7 +348,7 @@ router.get('/:id/close-readiness', async (req, res, next) => {
              FROM client_purchase_orders
              WHERE project_id=$1 AND remaining_amount > 0`, [pid]),
       // Internal POs with remaining balance
-      query(`SELECT id, folio, total_amount, remaining_amount,
+      query(`SELECT id, po_number, total_amount, remaining_amount,
                ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
              FROM internal_purchase_orders
              WHERE project_id=$1 AND remaining_amount > 0`, [pid])
@@ -398,11 +398,11 @@ router.get('/:id/close-readiness', async (req, res, next) => {
     for (const po of internalPOs.rows) {
       if (parseFloat(po.remaining_pct) > 15)
         blockers.push({ type: 'internal_po_balance',
-          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir (límite 15%).`,
+          message: `PO Interna ${po.po_number}: ${po.remaining_pct}% sin consumir (límite 15%).`,
           items: [po] });
       else if (parseFloat(po.remaining_pct) > 0)
         warnings.push({ type: 'internal_po_balance_warning',
-          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          message: `PO Interna ${po.po_number}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
           items: [po] });
     }
 
@@ -845,7 +845,7 @@ router.get('/:id/close-readiness', async (req, res, next) => {
              WHERE project_id=$1 AND outstanding_balance > 0
              AND status NOT IN ('cancelled','rejected')`, [pid]),
       // Tasks not completed/cancelled
-      query(`SELECT id, task_name, status FROM tasks
+      query(`SELECT id, title, status FROM tasks
              WHERE project_id=$1 AND status NOT IN ('completed','cancelled')`, [pid]),
       // Risks still open
       query(`SELECT uuid, title, status FROM project_risks
@@ -856,7 +856,7 @@ router.get('/:id/close-readiness', async (req, res, next) => {
              FROM client_purchase_orders
              WHERE project_id=$1 AND remaining_amount > 0`, [pid]),
       // Internal POs with remaining balance
-      query(`SELECT id, folio, total_amount, remaining_amount,
+      query(`SELECT id, po_number, total_amount, remaining_amount,
                ROUND((remaining_amount / NULLIF(total_amount,0)) * 100, 2) AS remaining_pct
              FROM internal_purchase_orders
              WHERE project_id=$1 AND remaining_amount > 0`, [pid])
@@ -906,11 +906,11 @@ router.get('/:id/close-readiness', async (req, res, next) => {
     for (const po of internalPOs.rows) {
       if (parseFloat(po.remaining_pct) > 15)
         blockers.push({ type: 'internal_po_balance',
-          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir (límite 15%).`,
+          message: `PO Interna ${po.po_number}: ${po.remaining_pct}% sin consumir (límite 15%).`,
           items: [po] });
       else if (parseFloat(po.remaining_pct) > 0)
         warnings.push({ type: 'internal_po_balance_warning',
-          message: `PO Interna ${po.folio}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
+          message: `PO Interna ${po.po_number}: ${po.remaining_pct}% sin consumir — requiere justificación.`,
           items: [po] });
     }
 
