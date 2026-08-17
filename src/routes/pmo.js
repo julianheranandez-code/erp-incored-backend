@@ -161,18 +161,18 @@ router.post('/tasks', async (req, res, next) => {
     const result = await query(`
       INSERT INTO project_tasks (
         project_id, company_id, milestone_id, parent_task_id,
-        task_name, description, category,
+        name, task_name, description, category,
         assigned_user_id, assigned_crew_id,
         priority, status,
         planned_start_date, planned_end_date,
         estimated_hours, client_visible, location, notes, created_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       RETURNING *
     `, [
       parseInt(project_id), parseInt(company_id),
       milestone_id ? parseInt(milestone_id) : null,
       parent_task_id ? parseInt(parent_task_id) : null,
-      task_name, description || null, category || null,
+      task_name, task_name, description || null, category || null,
       assigned_user_id || null,
       assigned_crew_id ? parseInt(assigned_crew_id) : null,
       priority, status,
