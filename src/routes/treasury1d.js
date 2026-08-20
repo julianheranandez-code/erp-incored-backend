@@ -344,11 +344,19 @@ router.get('/approvals/:id', async (req, res, next) => {
       LEFT JOIN ar_invoices ai         ON r.entity_type='AR_INVOICE'   AND ai.id = r.entity_id::integer
       LEFT JOIN projects aip           ON aip.id = ai.project_id
       LEFT JOIN clients aic            ON aic.id = ai.client_id
-      WHERE r.id=$1 ${companyId ? 'AND r.company_id=$2' : ''}
-    `, companyId ? [requestId, companyId] : [requestId]);
+      WHERE r.id=$1
+    `, [requestId]);
 
     if (!request.rows[0])
       return res.status(404).json({ success: false, error: 'not_found' });
+
+    // Validate user has access to this approval's company
+    const approvalCompanyId = request.rows[0].company_id;
+    const userCompanies = (req.user.company_access || [parseInt(req.user.company_id)]).map(Number);
+    const roles = getEffectiveRoles(req.user);
+    if (!roles.includes('super_admin') && !userCompanies.includes(approvalCompanyId))
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'No tienes acceso a esta solicitud de aprobación.' });
 
     const steps = await query(`
       SELECT s.*, CONCAT(u.first_name,' ',u.last_name) AS approver_name, u.email
