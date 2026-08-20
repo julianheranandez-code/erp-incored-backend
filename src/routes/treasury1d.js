@@ -40,6 +40,12 @@ function getEffectiveRoles(user) {
 function getCompanyScope(user, queryCompanyId) {
   const roles = getEffectiveRoles(user);
   if (roles.includes('super_admin')) return queryCompanyId ? parseInt(queryCompanyId) : null;
+  // Respect queryCompanyId if user has access to that company
+  if (queryCompanyId) {
+    const userCompanies = (user.company_access || [parseInt(user.company_id)]).map(Number);
+    const requested = parseInt(queryCompanyId);
+    if (userCompanies.includes(requested)) return requested;
+  }
   return parseInt(user.active_company_id || user.company_id);
 }
 
