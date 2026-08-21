@@ -224,6 +224,7 @@ router.put('/tasks/:id', async (req, res, next) => {
     const result = await query(`
       UPDATE project_tasks SET
         task_name           = COALESCE($1, task_name),
+        name                = COALESCE($1, name),
         description         = COALESCE($2, description),
         status              = COALESCE($3, status),
         priority            = COALESCE($4, priority),
@@ -234,16 +235,9 @@ router.put('/tasks/:id', async (req, res, next) => {
         planned_end_date    = COALESCE($9, planned_end_date),
         actual_start_date   = COALESCE($10, actual_start_date),
         actual_end_date     = COALESCE($11, actual_end_date),
-        blocked_reason      = COALESCE($12, blocked_reason),
-        notes               = COALESCE($13, notes),
-        milestone_id        = COALESCE($14::integer, milestone_id),
-        estimated_hours     = COALESCE($15::numeric, estimated_hours),
-        actual_hours        = COALESCE($16::numeric, actual_hours),
-        location            = COALESCE($17, location),
-        completed_by        = COALESCE($18::uuid, completed_by),
-        completed_at        = COALESCE($19::timestamp, completed_at),
+        milestone_id        = COALESCE($12::integer, milestone_id),
         updated_at          = NOW()
-      WHERE id = $20 RETURNING *
+      WHERE id = $13 RETURNING *
     `, [
       task_name || null, description || null,
       status || null, priority || null,
@@ -252,11 +246,7 @@ router.put('/tasks/:id', async (req, res, next) => {
       assigned_crew_id || null,
       planned_start_date || null, planned_end_date || null,
       autoActualStart || null, autoActualEnd || null,
-      blocked_reason || null, notes || null,
       milestone_id || null,
-      estimated_hours || null, actual_hours || null,
-      location || null,
-      completedBy, completedAt,
       id
     ]);
 
