@@ -335,9 +335,9 @@ router.post('/milestones', async (req, res, next) => {
     }
 
     const result = await query(`
-      INSERT INTO project_milestones (project_id, company_id, name, description, planned_date, client_visible, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *
-    `, [parseInt(project_id), parseInt(company_id), name, description || null, planned_date, client_visible, req.user.id]);
+      INSERT INTO project_milestones (project_id, company_id, name, description, planned_date)
+      VALUES ($1,$2,$3,$4,$5) RETURNING *
+    `, [parseInt(project_id), parseInt(company_id), name, description || null, planned_date]);
 
     res.status(201).json({ success: true, message: 'Milestone created.', data: result.rows[0] });
   } catch (error) { next(error); }
