@@ -594,16 +594,19 @@ router.get('/crews', async (req, res, next) => {
 // POST /api/pmo/crews
 router.post('/crews', async (req, res, next) => {
   try {
-    const { project_id, company_id, crew_name, supervisor_id, crew_size, specialty, notes } = req.body;
+    const { project_id, company_id, crew_name, supervisor_id, crew_size, specialty, notes,
+            crew_type, subcontractor_id, start_date, end_date } = req.body;
     if (!project_id || !company_id || !crew_name) {
       return res.status(400).json({ success: false, error: 'validation_error', message: 'Required: project_id, company_id, crew_name' });
     }
 
     const result = await query(`
-      INSERT INTO project_crews (project_id, company_id, crew_name, supervisor_id, crew_size, specialty, notes, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *
+      INSERT INTO project_crews (project_id, company_id, crew_name, supervisor_id, crew_size, specialty, notes, crew_type, subcontractor_id, start_date, end_date, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *
     `, [parseInt(project_id), parseInt(company_id), crew_name, supervisor_id || null,
-        crew_size ? parseInt(crew_size) : 1, specialty || null, notes || null, req.user.id]);
+        crew_size ? parseInt(crew_size) : 1, specialty || null, notes || null,
+        crew_type || null, subcontractor_id ? parseInt(subcontractor_id) : null,
+        start_date || null, end_date || null, req.user.id]);
 
     res.status(201).json({ success: true, message: 'Crew created.', data: result.rows[0] });
   } catch (error) { next(error); }
@@ -1285,7 +1288,7 @@ router.put('/crews/:id', async (req, res, next) => {
 // PATCH /api/pmo/crews/:id (alias for PUT)
 router.patch('/crews/:id', async (req, res, next) => {
   req.method = 'PUT';
-  const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes, subcontractor_id } = req.body;
+  const { crew_name, crew_type, supervisor_id, crew_size, specialty, status, notes, subcontractor_id, start_date, end_date } = req.body;
   try {
     const result = await query(`
       UPDATE project_crews SET
@@ -1297,13 +1300,16 @@ router.patch('/crews/:id', async (req, res, next) => {
         notes            = COALESCE($6, notes),
         crew_type        = COALESCE($7, crew_type),
         subcontractor_id = $8,
+        start_date       = COALESCE($9, start_date),
+        end_date         = COALESCE($10, end_date),
         updated_at       = NOW()
-      WHERE id = $9
+      WHERE id = $11
       RETURNING *`,
       [crew_name||null, supervisor_id||null,
        crew_size?parseInt(crew_size):null, specialty||null,
        status||null, notes||null,
        crew_type||null, subcontractor_id?parseInt(subcontractor_id):null,
+       start_date||null, end_date||null,
        parseInt(req.params.id)]
     );
     if (!result.rows[0]) return res.status(404).json({ success:false, error:'not_found', message:'Crew not found' });
