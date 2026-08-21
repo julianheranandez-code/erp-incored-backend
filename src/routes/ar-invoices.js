@@ -124,7 +124,9 @@ router.post('/', async (req, res, next) => {
       issue_date = new Date().toISOString().slice(0,10),
       due_date, currency = 'MXN', exchange_rate = 1,
       cfdi_uuid, cfdi_xml_url, items, rate_card_id,
-      client_po_reference, project_period_start, project_period_end
+      client_po_reference, project_period_start, project_period_end,
+      discount_percent = 0, discount_days = 0, payment_terms = 'NET30',
+      retainage_percent = 0, retainage_release_days = 30
     } = req.body;
 
     if (!company_id || !client_id || !project_id || !subtotal || !issue_date || !due_date)
@@ -143,8 +145,16 @@ router.post('/', async (req, res, next) => {
     const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
     const folio = `IN-${compCode}-${mm}${yy}-${seq}`;
 
-    const tax_amount   = parseFloat(subtotal) * (parseFloat(tax_percent) / 100);
-    const total_amount = parseFloat(subtotal) + tax_amount;
+    const tax_amount        = parseFloat(subtotal) * (parseFloat(tax_percent) / 100);
+    const discount_amount   = parseFloat(subtotal) * (parseFloat(discount_percent) / 100);
+    const retainage_amount  = parseFloat(subtotal) * (parseFloat(retainage_percent) / 100);
+    const total_amount      = parseFloat(subtotal) + tax_amount;
+    const derived_payment_terms = parseInt(discount_days) > 0
+      ? `NET${discount_days}` : (payment_terms || 'NET30');
+    const discount_deadline_date = parseInt(discount_days) > 0
+      ? new Date(new Date(issue_date).getTime() + parseInt(discount_days) * 86400000)
+          .toISOString().slice(0,10)
+      : null;
 
     // Phase 2: Customer PO balance validation (hard block)
     if (client_po_id) {
@@ -168,9 +178,12 @@ router.post('/', async (req, res, next) => {
         total_amount, total_paid, outstanding_balance,
         currency, exchange_rate, status, issue_date, due_date,
         cfdi_uuid, cfdi_xml_url, approval_required, created_by,
-        project_period_start, project_period_end, project_week_number
+        project_period_start, project_period_end, project_week_number,
+        discount_percent, discount_amount, discount_days, discount_deadline_date,
+        payment_terms, retainage_percent, retainage_amount, retainage_release_days
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$11,
-                $12,$13,'draft',$14,$15,$16,$17,true,$18,$19,$20,$21)
+                $12,$13,'draft',$14,$15,$16,$17,true,$18,$19,$20,$21,
+                $22,$23,$24,$25,$26,$27,$28,$29)
       RETURNING *
     `, [parseInt(company_id), parseInt(client_id), parseInt(project_id),
         client_po_id ? parseInt(client_po_id) : null,
@@ -179,7 +192,11 @@ router.post('/', async (req, res, next) => {
         currency, parseFloat(exchange_rate), issue_date, due_date,
         cfdi_uuid||null, cfdi_xml_url||null, req.user.id,
         project_period_start||null, project_period_end||null,
-        project_period_start ? Math.ceil((new Date(project_period_start) - new Date(new Date(project_period_start).getFullYear(),0,1)) / (7*24*60*60*1000)) : null]);
+        project_period_start ? Math.ceil((new Date(project_period_start) - new Date(new Date(project_period_start).getFullYear(),0,1)) / (7*24*60*60*1000)) : null,
+        parseFloat(discount_percent), discount_amount, parseInt(discount_days),
+        discount_deadline_date,
+        derived_payment_terms,
+        parseFloat(retainage_percent), retainage_amount, parseInt(retainage_release_days)]);
 
     // Deduct from Client PO invoiced_amount (remaining_amount is generated)
     if (client_po_id) {
