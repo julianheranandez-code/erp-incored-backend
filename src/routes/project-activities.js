@@ -22,10 +22,12 @@ router.get('/', async (req, res, next) => {
     const result = await query(`
       SELECT pa.*,
         CONCAT(u.first_name,' ',u.last_name) AS created_by_name,
-        parent.name AS parent_name
+        parent.name AS parent_name,
+        pc.crew_name
       FROM project_activities pa
       LEFT JOIN users u ON u.id = pa.created_by
       LEFT JOIN project_activities parent ON parent.id = pa.parent_id
+      LEFT JOIN project_crews pc ON pc.id = pa.crew_id
       WHERE pa.project_id = $1
       ORDER BY pa.sort_order ASC, pa.id ASC
     `, [parseInt(project_id)]);
