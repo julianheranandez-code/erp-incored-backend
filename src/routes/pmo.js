@@ -355,11 +355,11 @@ router.put('/milestones/:id', async (req, res, next) => {
         description      = COALESCE($2, description),
         planned_date     = COALESCE($3, planned_date),
         actual_date      = COALESCE($4, actual_date),
-        progress_percent = COALESCE($5::integer, progress_percent),
-        status           = COALESCE($6, status),
+
+        status           = COALESCE($5, status),
         updated_at       = NOW()
-      WHERE id = $7 RETURNING *
-    `, [name||null, description||null, planned_date||null, actual_date||null, progress_percent||null, status||null, id]);
+      WHERE id = $6 RETURNING *
+    `, [name||null, description||null, planned_date||null, actual_date||null, status||null, id]);
 
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found', message: 'Milestone not found.' });
     res.json({ success: true, message: 'Milestone updated.', data: result.rows[0] });
