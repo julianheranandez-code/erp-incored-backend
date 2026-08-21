@@ -88,15 +88,16 @@ router.post('/', async (req, res, next) => {
         (project_id, company_id, parent_id, activity_code, name, weight_pct,
          quantity, unit, team_size, planned_start_date, planned_end_date,
          actual_start_date, actual_end_date, quantity_done, progress_pct,
-         status, sort_order, notes, created_by)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         status, sort_order, notes, crew_id, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
       RETURNING *`,
       [parseInt(project_id), company_id, parent_id || null, activity_code || null,
        name, parseFloat(weight_pct || 0), qty, unit || null, parseInt(team_size || 1),
        planned_start_date || null, planned_end_date || null,
        actual_start_date || null, actual_end_date || null,
        qtyDone, calcProgress, status || 'not_started',
-       parseInt(sort_order || 0), notes || null, req.user.id]
+       parseInt(sort_order || 0), notes || null,
+       req.body.crew_id ? parseInt(req.body.crew_id) : null, req.user.id]
     );
 
     logger.info('[ProjectActivities] Created', { project_id, name });
@@ -116,7 +117,7 @@ router.put('/:id', async (req, res, next) => {
     const {
       name, activity_code, weight_pct, quantity, unit, team_size,
       planned_start_date, planned_end_date, actual_start_date, actual_end_date,
-      quantity_done, progress_pct, status, sort_order, notes
+      quantity_done, progress_pct, status, sort_order, notes, crew_id
     } = req.body;
 
     const qty     = parseFloat(quantity     ?? cur.quantity     ?? 0);
@@ -146,8 +147,9 @@ router.put('/:id', async (req, res, next) => {
         status             = $13,
         sort_order         = COALESCE($14, sort_order),
         notes              = COALESCE($15, notes),
+        crew_id            = COALESCE($16, crew_id),
         updated_at         = NOW()
-      WHERE id = $16 RETURNING *`,
+      WHERE id = $17 RETURNING *`,
       [name || null, activity_code || null,
        weight_pct != null ? parseFloat(weight_pct) : null,
        qty, unit || null,
@@ -156,7 +158,9 @@ router.put('/:id', async (req, res, next) => {
        actual_start_date  || null, actual_end_date  || null,
        qtyDone, calcProgress, autoStatus,
        sort_order != null ? parseInt(sort_order) : null,
-       notes || null, parseInt(req.params.id)]
+       notes || null,
+       crew_id ? parseInt(crew_id) : null,
+       parseInt(req.params.id)]
     );
 
     return res.json({ success: true, data: result.rows[0],
