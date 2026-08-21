@@ -173,11 +173,17 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
           { level: 2, role: 'finance' }
         ];
 
+      // AR_INVOICE — USA_V1: 2 levels (Accounting → Finance)
+      case 'AR_INVOICE':
+        return [
+          { level: 1, role: 'accounting_manager' },
+          { level: 2, role: 'finance' }
+        ];
+
       // Sprint 3 types not yet configured for USA_V1
       case 'EXPENSE':
       case 'AP_BILL':
       case 'INTERNAL_PO':
-      case 'AR_INVOICE':
         throw new Error(
           `USA_V1 approval matrix not configured for type: "${approvalType}". ` +
           `Configure a USA_V1 matrix in THRESHOLDS_USA_V1 before using this type.`
