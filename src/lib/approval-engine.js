@@ -173,11 +173,10 @@ function getApprovalChain(approvalType, amount, approvalPolicy = 'MEXICO_V1') {
           { level: 2, role: 'finance' }
         ];
 
-      // AR_INVOICE — USA_V1: 2 levels (Accounting → Finance)
+      // AR_INVOICE — USA_V1: 1 level (Accounting only)
       case 'AR_INVOICE':
         return [
-          { level: 1, role: 'accounting_manager' },
-          { level: 2, role: 'finance' }
+          { level: 1, role: 'accounting_manager' }
         ];
 
       // Sprint 3 types not yet configured for USA_V1
