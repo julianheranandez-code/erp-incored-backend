@@ -51,7 +51,7 @@ function getCompanyScope(user, queryCompanyId) {
 
 async function assertTreasuryPermission(req, res, permission = 'treasury.view') {
   const roles = getEffectiveRoles(req.user);
-  if (roles.includes('super_admin')) return true;
+  if (roles.includes('super_admin') || roles.includes('admin')) return true;
   try {
     const companyId = getCompanyScope(req.user, req.query.company_id);
     const effective = await getEffectivePermissions(req.user.id, companyId);
