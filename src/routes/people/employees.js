@@ -82,7 +82,69 @@ router.get('/:uuid', async (req, res, next) => {
       WHERE e.uuid = $1
     `, [req.params.uuid]);
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    const empCompanyId = result.rows[0].company_id || result.rows[0].primary_company_id;
+    if (req.user.role !== 'super_admin' && empCompanyId && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden' });
     res.json({ success: true, data: result.rows[0] });
+  } catch(e) { next(e); }
+});
+
+// PATCH /api/people/employees/:uuid
+router.patch('/:uuid', async (req, res, next) => {
+  try {
+    const empResult = await query(
+      'SELECT id, company_id FROM employees WHERE uuid=$1',
+      [req.params.uuid]
+    );
+    if (!empResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const { id: empId, company_id } = empResult.rows[0];
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const allowed = [
+      'first_name','last_name_paternal','last_name','last_name_maternal','preferred_name',
+      'personal_email','work_email','personal_phone',
+      'address','city','state','postal_code',
+      'emergency_contact_name','emergency_contact_phone','emergency_contact_relationship',
+      'gender','nationality','country_code'
+    ];
+
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        fields.push(`${key} = $${idx++}`);
+        values.push(req.body[key]);
+      }
+    }
+    if (!fields.length)
+      return res.status(400).json({ success: false, error: 'no_updatable_fields' });
+
+    values.push(empId);
+    const oldResult = await query('SELECT * FROM employees WHERE id=$1', [empId]);
+    const oldValues = oldResult.rows[0];
+
+    await query(
+      `UPDATE employees SET ${fields.join(', ')} WHERE id=$${idx}`,
+      values
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'employee_updated',
+      entityType: 'employees', entityId: req.params.uuid,
+      companyId: company_id, oldValues, newValues: req.body,
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    const updated = await query(
+      'SELECT uuid, first_name, last_name_paternal, work_email, status FROM employees WHERE id=$1',
+      [empId]
+    );
+    res.json({ success: true, data: updated.rows[0], message: 'Employee updated.' });
   } catch(e) { next(e); }
 });
 

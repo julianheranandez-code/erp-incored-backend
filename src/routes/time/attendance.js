@@ -50,8 +50,11 @@ router.get('/', async (req, res, next) => {
 // GET /api/time/attendance/:employee_uuid/today
 router.get('/:employee_uuid/today', async (req, res, next) => {
   try {
-    const emp = await query('SELECT id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
+    const emp = await query('SELECT id, company_id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
     if (!emp.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(emp.rows[0].company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
     const today = new Date().toISOString().slice(0,10);
     const result = await query(`
       SELECT uuid, work_date, punch_in, punch_out, hours_worked,
@@ -68,8 +71,11 @@ router.get('/:employee_uuid/week', async (req, res, next) => {
   try {
     const { week_start } = req.query;
     if (!week_start) return res.status(400).json({ success: false, error: 'week_start required' });
-    const emp = await query('SELECT id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
+    const emp = await query('SELECT id, company_id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
     if (!emp.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(emp.rows[0].company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
     const weekEnd = new Date(week_start);
     weekEnd.setDate(weekEnd.getDate() + 6);
     const result = await query(`
@@ -175,6 +181,70 @@ router.post('/:employee_uuid/punch-out', async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
 
     res.json({ success: true, data: result.rows[0], message: `Punch out recorded. Hours worked: ${hoursWorked}` });
+  } catch(e) { next(e); }
+});
+
+// PATCH /api/time/attendance/:uuid/correct
+router.patch('/:uuid/correct', async (req, res, next) => {
+  try {
+    const { punch_in, punch_out, notes, reason } = req.body;
+    if (!reason) return res.status(400).json({ success: false, error: 'reason required' });
+
+    // Fetch record + employee company
+    const recResult = await query(
+      `SELECT ar.id, ar.uuid, ar.employee_id, ar.company_id,
+              ar.punch_in, ar.punch_out, ar.hours_worked,
+              ar.attendance_source, ar.source_reference, ar.notes
+       FROM attendance_records ar
+       WHERE ar.uuid = $1`,
+      [req.params.uuid]
+    );
+    if (!recResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const rec = recResult.rows[0];
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(rec.company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const oldValues = {
+      punch_in: rec.punch_in, punch_out: rec.punch_out,
+      hours_worked: rec.hours_worked, notes: rec.notes,
+      attendance_source: rec.attendance_source
+    };
+
+    // Recalculate hours if both times provided
+    const newPunchIn  = punch_in  !== undefined ? punch_in  : rec.punch_in;
+    const newPunchOut = punch_out !== undefined ? punch_out : rec.punch_out;
+    let hoursWorked = rec.hours_worked;
+    if (newPunchIn && newPunchOut) {
+      const ms = new Date(newPunchOut) - new Date(newPunchIn);
+      hoursWorked = ms > 0 ? (ms / 3600000).toFixed(2) : 0;
+    }
+
+    await query(
+      `UPDATE attendance_records
+       SET punch_in=$1, punch_out=$2, hours_worked=$3,
+           notes=$4, attendance_source='manual'
+       WHERE id=$5`,
+      [newPunchIn, newPunchOut, hoursWorked,
+       notes !== undefined ? notes : rec.notes, rec.id]
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'attendance_corrected',
+      entityType: 'attendance_records', entityId: rec.uuid,
+      companyId: rec.company_id,
+      oldValues,
+      newValues: { punch_in: newPunchIn, punch_out: newPunchOut,
+                   hours_worked: hoursWorked, notes, reason,
+                   corrected_by: req.user.id },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.json({ success: true,
+      data: { uuid: rec.uuid, punch_in: newPunchIn, punch_out: newPunchOut,
+              hours_worked: hoursWorked, attendance_source: 'manual' },
+      message: 'Attendance record corrected.' });
   } catch(e) { next(e); }
 });
 

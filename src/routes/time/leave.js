@@ -242,4 +242,30 @@ router.post('/requests/:uuid/cancel', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+// GET /api/time/leave/requests/:uuid
+router.get('/requests/:uuid', async (req, res, next) => {
+  try {
+    const result = await query(`
+      SELECT lr.uuid, lr.start_date, lr.end_date, lr.days_requested,
+        lr.reason, lr.status, lr.rejection_reason, lr.created_at,
+        lr.approved_at, lr.approved_by,
+        lt.name AS leave_type_name, lt.code AS leave_type_code,
+        lr.company_id,
+        TRIM(CONCAT(e.first_name, ' ', COALESCE(e.last_name_paternal, e.last_name, ''))) AS employee_name,
+        e.uuid AS employee_uuid
+      FROM leave_requests lr
+      JOIN leave_types lt ON lt.id = lr.leave_type_id
+      JOIN employees e ON e.id = lr.employee_id
+      WHERE lr.uuid = $1
+    `, [req.params.uuid]);
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(result.rows[0].company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
