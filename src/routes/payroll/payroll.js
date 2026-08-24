@@ -354,37 +354,55 @@ router.get('/runs/:uuid', async (req, res, next) => {
 // POST /api/payroll/runs/:uuid/calculate
 router.post('/runs/:uuid/calculate', async (req, res, next) => {
   try {
-    const run = await query(`
-      SELECT pr.id, pr.company_id, pr.employment_regime, pr.currency,
-        pp.start_date, pp.end_date
-      FROM payroll_runs pr
-      JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
-      WHERE pr.uuid=$1 AND pr.status='draft'
-    `, [req.params.uuid]);
-    if (!run.rows[0]) return res.status(404).json({ success: false,
-      error: 'not_found_or_not_draft', message: 'Run must be in draft status to calculate.' });
+    // Pre-check: fast fail if run doesn't exist at all
+    const preCheck = await query(
+      'SELECT id FROM payroll_runs WHERE uuid=$1',
+      [req.params.uuid]
+    );
+    if (!preCheck.rows[0]) return res.status(404).json({ success: false,
+      error: 'not_found', message: 'Payroll run not found.' });
 
-    const { id: runId, company_id, employment_regime,
-            start_date, end_date } = run.rows[0];
-
-    // Get eligible employees by regime
-    const employees = await query(`
-      SELECT e.id, e.uuid AS emp_uuid, e.employee_number,
-        CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal,e.last_name,'')) AS name,
-        cr.amount AS salary, cr.pay_frequency, cr.currency AS comp_currency,
-        ec.employment_regime AS contract_regime
-      FROM employees e
-      JOIN compensation_records cr ON cr.employee_id = e.id AND cr.end_date IS NULL
-      JOIN employment_contracts ec ON ec.employee_id = e.id AND ec.is_current = true
-      WHERE e.company_id = $1 AND e.status = 'active'
-        AND ec.employment_regime = $2
-        AND (e.termination_date IS NULL OR e.termination_date >= $3)
-    `, [company_id, employment_regime, start_date]);
-
+    let runId, company_id, employment_regime, start_date, end_date;
     let totalGross = 0, totalNet = 0, totalDeductions = 0, totalBurden = 0;
     let employeeCount = 0;
+    let employees;
 
     await withTransaction(async (client) => {
+      // LOCK: acquire row-level lock first to prevent concurrent calculate
+      const run = await client.query(`
+        SELECT pr.id, pr.company_id, pr.employment_regime, pr.currency,
+          pr.status, pp.start_date, pp.end_date
+        FROM payroll_runs pr
+        JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
+        WHERE pr.uuid=$1
+        FOR UPDATE
+      `, [req.params.uuid]);
+
+      // Re-read status AFTER acquiring lock
+      if (!run.rows[0] || run.rows[0].status !== 'draft') {
+        const status = run.rows[0]?.status || 'not_found';
+        throw Object.assign(new Error('not_draft'), { statusCode: 400,
+          body: { success: false, error: 'not_found_or_not_draft',
+            message: `Run must be in draft status to calculate. Current status: ${status}` }});
+      }
+
+      ({ id: runId, company_id, employment_regime, start_date, end_date } = run.rows[0]);
+
+      // Get eligible employees by regime
+      const empResult = await client.query(`
+        SELECT e.id, e.uuid AS emp_uuid, e.employee_number,
+          CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal,e.last_name,'')) AS name,
+          cr.amount AS salary, cr.pay_frequency, cr.currency AS comp_currency,
+          ec.employment_regime AS contract_regime
+        FROM employees e
+        JOIN compensation_records cr ON cr.employee_id = e.id AND cr.end_date IS NULL
+        JOIN employment_contracts ec ON ec.employee_id = e.id AND ec.is_current = true
+        WHERE e.company_id = $1 AND e.status = 'active'
+          AND ec.employment_regime = $2
+          AND (e.termination_date IS NULL OR e.termination_date >= $3)
+      `, [company_id, employment_regime, start_date]);
+      employees = empResult;
+
       // Clear existing entries for this run
       await client.query('DELETE FROM payroll_deductions WHERE payroll_entry_id IN (SELECT id FROM payroll_entries WHERE payroll_run_id=$1)', [runId]);
       await client.query('DELETE FROM payroll_entries WHERE payroll_run_id=$1', [runId]);
@@ -473,26 +491,42 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
       total_deductions: totalDeductions.toFixed(2),
       total_employer_burden: totalBurden.toFixed(2)
     }, message: `Payroll calculated for ${employeeCount} employees.` });
-  } catch(e) { next(e); }
+  } catch(e) {
+    if (e.body) return res.status(e.statusCode || 400).json(e.body);
+    next(e);
+  }
 });
 
 // POST /api/payroll/runs/:uuid/approve
 router.post('/runs/:uuid/approve', async (req, res, next) => {
   try {
-    const run = await query('SELECT id, company_id, status FROM payroll_runs WHERE uuid=$1', [req.params.uuid]);
-    if (!run.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
-    if (run.rows[0].status !== 'calculated')
-      return res.status(400).json({ success: false, error: 'invalid_status',
-        message: 'Run must be calculated before approval.' });
-    await query(`
-      UPDATE payroll_runs SET status='approved', approved_by=$1, approved_at=NOW(), updated_at=NOW()
-      WHERE uuid=$2
-    `, [req.user.id, req.params.uuid]);
+    const preCheck = await query('SELECT id FROM payroll_runs WHERE uuid=$1', [req.params.uuid]);
+    if (!preCheck.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    await withTransaction(async (client) => {
+      // LOCK: prevent concurrent approve or calculate
+      const run = await client.query(
+        'SELECT id, company_id, status FROM payroll_runs WHERE uuid=$1 FOR UPDATE',
+        [req.params.uuid]
+      );
+      if (run.rows[0].status !== 'calculated')
+        throw Object.assign(new Error('invalid_status'), { statusCode: 400,
+          body: { success: false, error: 'invalid_status',
+            message: `Run must be calculated before approval. Current status: ${run.rows[0].status}` }});
+
+      await client.query(`
+        UPDATE payroll_runs SET status='approved', approved_by=$1, approved_at=NOW(), updated_at=NOW()
+        WHERE uuid=$2
+      `, [req.user.id, req.params.uuid]);
+    });
     writeAudit({ userId: req.user.id, action: 'payroll_run_approved',
       entityType: 'payroll_runs', entityId: req.params.uuid,
-      companyId: run.rows[0].company_id, ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+      companyId: preCheck.rows[0].id, ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
     res.json({ success: true, message: 'Payroll run approved.' });
-  } catch(e) { next(e); }
+  } catch(e) {
+    if (e.body) return res.status(e.statusCode || 400).json(e.body);
+    next(e);
+  }
 });
 
 // GET /api/payroll/runs/:uuid/entries
@@ -540,22 +574,47 @@ router.get('/provisions/:employee_uuid', async (req, res, next) => {
 // POST /api/payroll/provisions/:employee_uuid/accrue
 router.post('/provisions/:employee_uuid/accrue', async (req, res, next) => {
   try {
-    const { provision_type, amount, fiscal_year = new Date().getFullYear() } = req.body;
+    const { provision_type, amount, fiscal_year = new Date().getFullYear(),
+            payroll_run_uuid, source_period_start, source_period_end } = req.body;
     if (!provision_type || !amount)
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: provision_type, amount' });
     const emp = await query('SELECT id, company_id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
     if (!emp.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
     const { id: empId, company_id } = emp.rows[0];
-    await query(`
-      INSERT INTO annual_provisions
-        (employee_id, company_id, provision_type, fiscal_year, accrued_amount, last_updated)
-      VALUES ($1,$2,$3,$4,$5,CURRENT_DATE)
-      ON CONFLICT (employee_id, provision_type, fiscal_year) DO UPDATE SET
-        accrued_amount = annual_provisions.accrued_amount + $5,
-        last_updated = CURRENT_DATE, updated_at = NOW()
-    `, [empId, company_id, provision_type, parseInt(fiscal_year), parseFloat(amount)]);
-    res.status(201).json({ success: true, message: `${provision_type} provision accrued: ${amount}` });
+
+    if (payroll_run_uuid) {
+      // Idempotent accrual: same run + same provision_type + same fiscal_year = DO NOTHING
+      const runRow = await query('SELECT id FROM payroll_runs WHERE uuid=$1 AND company_id=$2',
+        [payroll_run_uuid, company_id]);
+      if (!runRow.rows[0]) return res.status(400).json({ success: false, error: 'invalid_payroll_run',
+        message: 'payroll_run_uuid not found or does not belong to this company.' });
+      const runId = runRow.rows[0].id;
+
+      await query(`
+        INSERT INTO annual_provisions
+          (employee_id, company_id, provision_type, fiscal_year,
+           accrued_amount, payroll_run_id, source_period_start, source_period_end, last_updated)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE)
+        ON CONFLICT (employee_id, provision_type, fiscal_year, payroll_run_id)
+        DO NOTHING
+      `, [empId, company_id, provision_type, parseInt(fiscal_year),
+          parseFloat(amount), runId,
+          source_period_start || null, source_period_end || null]);
+    } else {
+      // Legacy behavior: cumulative accrual without run reference
+      await query(`
+        INSERT INTO annual_provisions
+          (employee_id, company_id, provision_type, fiscal_year, accrued_amount, last_updated)
+        VALUES ($1,$2,$3,$4,$5,CURRENT_DATE)
+        ON CONFLICT (employee_id, provision_type, fiscal_year) DO UPDATE SET
+          accrued_amount = annual_provisions.accrued_amount + $5,
+          last_updated = CURRENT_DATE, updated_at = NOW()
+      `, [empId, company_id, provision_type, parseInt(fiscal_year), parseFloat(amount)]);
+    }
+    res.status(201).json({ success: true,
+      message: `${provision_type} provision accrued: ${amount}`,
+      idempotent: !!payroll_run_uuid });
   } catch(e) { next(e); }
 });
 
