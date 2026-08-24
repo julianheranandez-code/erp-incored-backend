@@ -38,6 +38,9 @@ router.post('/:employee_uuid/recalculate', async (req, res, next) => {
     const emp = await query('SELECT id, company_id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
     if (!emp.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
     const { id: empId, company_id } = emp.rows[0];
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
 
     const weekEnd = new Date(week_start);
     weekEnd.setDate(weekEnd.getDate() + 6);
@@ -76,6 +79,10 @@ router.post('/:employee_uuid/recalculate', async (req, res, next) => {
           regularHours += hours;
         }
         daysWorked++;
+      } else if (r.punch_in && !r.punch_out) {
+        // Half-punch: punch_in exists but no punch_out
+        // Do NOT count as worked, do NOT count as absent
+        // Silently excluded — correction required via PATCH /attendance/:uuid/correct
       } else if (!r.punch_in) {
         daysAbsent++;
         absenceHours += dailyThreshold;

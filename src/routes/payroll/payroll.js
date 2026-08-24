@@ -378,7 +378,8 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
       JOIN employment_contracts ec ON ec.employee_id = e.id AND ec.is_current = true
       WHERE e.company_id = $1 AND e.status = 'active'
         AND ec.employment_regime = $2
-    `, [company_id, employment_regime]);
+        AND (e.termination_date IS NULL OR e.termination_date >= $3)
+    `, [company_id, employment_regime, start_date]);
 
     let totalGross = 0, totalNet = 0, totalDeductions = 0, totalBurden = 0;
     let employeeCount = 0;
@@ -397,7 +398,8 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
             COALESCE(SUM(days_worked),0) AS days_worked,
             COALESCE(SUM(days_absent),0) AS days_absent
           FROM timesheet_summaries
-          WHERE employee_id=$1 AND week_start >= $2 AND week_end <= $3
+          WHERE employee_id=$1
+            AND (week_start, week_end) OVERLAPS ($2::date, $3::date)
         `, [emp.id, start_date, end_date]);
 
         const timesheet = ts.rows[0];

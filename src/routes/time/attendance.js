@@ -241,6 +241,77 @@ router.patch('/:uuid/correct', async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
+    // Auto-recalculate timesheet for the affected week
+    try {
+      const workDate = rec.work_date
+        ? rec.work_date.toISOString ? rec.work_date.toISOString().slice(0,10) : String(rec.work_date).slice(0,10)
+        : newPunchIn ? new Date(newPunchIn).toISOString().slice(0,10) : null;
+      if (workDate) {
+        const d = new Date(workDate);
+        const day = d.getDay(); // 0=Sun
+        const diffToMon = (day === 0 ? -6 : 1 - day);
+        d.setDate(d.getDate() + diffToMon);
+        const weekStart = d.toISOString().slice(0,10);
+        const weekEnd = new Date(d);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+        const weekEndStr = weekEnd.toISOString().slice(0,10);
+
+        const records = await query(`
+          SELECT work_date, punch_in, punch_out, hours_worked, is_holiday, is_day_off
+          FROM attendance_records
+          WHERE employee_id=$1 AND work_date BETWEEN $2 AND $3
+        `, [rec.employee_id, weekStart, weekEndStr]);
+
+        const policy = await query(`
+          SELECT policy_value FROM company_policies
+          WHERE company_id=$1 AND policy_domain='attendance' AND policy_key='weekly_hours'
+        `, [rec.company_id]);
+        const weeklyThreshold = parseFloat(policy.rows[0]?.policy_value || 40);
+        const dailyThreshold = weeklyThreshold / 5;
+
+        let regularHours = 0, overtimeHours = 0, holidayHours = 0, absenceHours = 0;
+        let daysWorked = 0, daysAbsent = 0;
+
+        for (const r of records.rows) {
+          const hours = parseFloat(r.hours_worked || 0);
+          if (r.is_holiday && hours > 0) {
+            holidayHours += hours; daysWorked++;
+          } else if (r.is_day_off) {
+            daysAbsent++;
+          } else if (r.punch_in && r.punch_out) {
+            if (hours > dailyThreshold) {
+              regularHours += dailyThreshold;
+              overtimeHours += (hours - dailyThreshold);
+            } else { regularHours += hours; }
+            daysWorked++;
+          } else if (r.punch_in && !r.punch_out) {
+            // half-punch: flag as exception, do not count hours or absence
+          } else if (!r.punch_in) {
+            daysAbsent++; absenceHours += dailyThreshold;
+          }
+        }
+
+        const totalHours = regularHours + overtimeHours + holidayHours;
+        await query(`
+          INSERT INTO timesheet_summaries
+            (employee_id, company_id, week_start, week_end,
+             regular_hours, overtime_hours, holiday_hours, absence_hours,
+             total_hours, days_worked, days_absent, status)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'open')
+          ON CONFLICT (employee_id, week_start) DO UPDATE SET
+            regular_hours=$5, overtime_hours=$6, holiday_hours=$7,
+            absence_hours=$8, total_hours=$9, days_worked=$10,
+            days_absent=$11, updated_at=NOW()
+        `, [rec.employee_id, rec.company_id, weekStart, weekEndStr,
+            regularHours.toFixed(2), overtimeHours.toFixed(2),
+            holidayHours.toFixed(2), absenceHours.toFixed(2),
+            totalHours.toFixed(2), daysWorked, daysAbsent]);
+      }
+    } catch(tsErr) {
+      // Non-fatal: timesheet recalculation failed, log but do not fail correction
+      console.error('Auto-recalculate timesheet failed after correction:', tsErr.message);
+    }
+
     res.json({ success: true,
       data: { uuid: rec.uuid, punch_in: newPunchIn, punch_out: newPunchOut,
               hours_worked: hoursWorked, attendance_source: 'manual' },
