@@ -547,13 +547,19 @@ router.post('/salary-history', async (req, res, next) => {
       `, [effective_date, parseInt(employee_id), parseInt(company_id)]);
 
       // Insert new active compensation_record with effective date
+      // Map workforce salary_type to compensation_records allowed values
+      // workforce: 'fixed','hourly','daily' → compensation: 'monthly','hourly','daily'
+      const compSalaryType = salary_type === 'hourly' ? 'hourly'
+                           : salary_type === 'daily'  ? 'daily'
+                           : salary_type === 'annual' ? 'annual'
+                           : 'monthly'; // default: fixed/monthly → 'monthly'
       await client.query(`
         INSERT INTO compensation_records
           (employee_id, company_id, amount, currency, salary_type,
            pay_frequency, effective_date, reason, notes, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       `, [parseInt(employee_id), parseInt(company_id), parseFloat(base_salary),
-          currency, salary_type, payroll_frequency,
+          currency, compSalaryType, payroll_frequency,
           effective_date, change_reason||null, notes||null, hist.rows[0].created_by]);
 
       return hist.rows[0];
