@@ -552,7 +552,6 @@ router.post('/salary-history', async (req, res, next) => {
           (employee_id, company_id, amount, currency, salary_type,
            pay_frequency, effective_date, reason, notes, created_by)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-        ON CONFLICT DO NOTHING
       `, [parseInt(employee_id), parseInt(company_id), parseFloat(base_salary),
           currency, salary_type, payroll_frequency,
           effective_date, change_reason||null, notes||null, hist.rows[0].created_by]);
