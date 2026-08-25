@@ -396,7 +396,8 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
         SELECT e.id, e.uuid AS emp_uuid, e.employee_number,
           CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal,e.last_name,'')) AS name,
           cr.amount AS salary, cr.pay_frequency, cr.currency AS comp_currency,
-          ec.employment_regime AS contract_regime
+          ec.employment_regime AS contract_regime,
+          ec.flsa_classification
         FROM employees e
         JOIN compensation_records cr ON cr.employee_id = e.id AND cr.end_date IS NULL
         JOIN employment_contracts ec ON ec.employee_id = e.id AND ec.is_current = true
@@ -481,6 +482,85 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
           result = await calculateMXIMSS(client, entryId, emp.id, company_id,
             runId, parseFloat(emp.salary), emp.pay_frequency, timesheet);
         } else if (employment_regime === 'US_W2') {
+          // FLSA classification check — NULL is not a valid default
+          if (!emp.flsa_classification) {
+            throw Object.assign(new Error('flsa_classification_required'), { statusCode: 422,
+              body: { success: false, error: 'flsa_classification_required',
+                message: `Employee ${emp.emp_uuid} (${emp.name}) has no FLSA classification. ` +
+                  `HR must set flsa_classification to 'exempt' or 'non_exempt' before payroll can be calculated.` }});
+          }
+
+          // Payroll period alignment check — must align with Monday-Sunday workweek
+          const periodStartDay = new Date(start_date).getDay(); // 0=Sun, 1=Mon
+          const periodEndDay = new Date(end_date).getDay();     // 0=Sun, 6=Sat
+          const periodStartMon = (new Date(start_date).getDay() === 1);
+          const periodEndSun = (new Date(end_date).getDay() === 0);
+          if (!periodStartMon || !periodEndSun) {
+            throw Object.assign(new Error('flsa_period_misaligned'), { statusCode: 422,
+              body: { success: false, error: 'flsa_period_misaligned',
+                message: `Payroll period ${start_date} → ${end_date} is not aligned with the configured FLSA workweek (Monday–Sunday). ` +
+                  `FLSA calculation requires complete workweek boundaries. Partial-workweek handling is Phase 2B-4.` }});
+          }
+
+          // FLSA weekly aggregation — read individual weeks, not SUM
+          // Each Monday-Sunday row evaluated independently per FLSA 29 CFR §778.105
+          const flsaWeeks = await client.query(`
+            SELECT week_start, week_end,
+              regular_hours, overtime_hours, holiday_hours,
+              absence_hours, days_worked, days_absent
+            FROM timesheet_summaries
+            WHERE employee_id=$1
+              AND company_id=$2
+              AND (week_start, week_end) OVERLAPS ($3::date, $4::date)
+            ORDER BY week_start
+          `, [emp.id, company_id, start_date, end_date]);
+
+          let flsaRegularHours = 0;
+          let flsaOTHours = 0;
+          let totalAbsenceHours = 0;
+          let totalDaysWorked = 0;
+          let totalDaysAbsent = 0;
+
+          for (const week of flsaWeeks.rows) {
+            // worked_hours = actual hours (regular + daily-classified OT + holiday worked)
+            // holiday_hours: Phase 2B-2 — hours actually worked on holiday → count toward FLSA 40h
+            const workedHours = parseFloat(week.regular_hours || 0)
+                              + parseFloat(week.overtime_hours || 0)
+                              + parseFloat(week.holiday_hours || 0);
+
+            if (emp.flsa_classification === 'non_exempt') {
+              // FLSA weekly threshold: 40h per workweek
+              flsaRegularHours += Math.min(workedHours, 40);
+              flsaOTHours      += Math.max(workedHours - 40, 0);
+            } else {
+              // exempt: no FLSA OT regardless of hours worked
+              flsaRegularHours += workedHours;
+              flsaOTHours      += 0;
+            }
+            totalAbsenceHours += parseFloat(week.absence_hours || 0);
+            totalDaysWorked   += parseInt(week.days_worked || 0);
+            totalDaysAbsent   += parseInt(week.days_absent || 0);
+          }
+
+          // Update payroll_entries with FLSA-correct hours
+          await client.query(`
+            UPDATE payroll_entries SET
+              regular_hours=$1, absence_hours=$2, days_worked=$3, days_absent=$4,
+              updated_at=NOW()
+            WHERE id=$5
+          `, [flsaRegularHours.toFixed(2), totalAbsenceHours.toFixed(2),
+              totalDaysWorked, totalDaysAbsent, entryId]);
+
+          // Build FLSA timesheet object for calculateUSAW2()
+          // Engine receives FLSA-correct values — no internal engine change
+          const flsaTimesheet = {
+            regular_hours: flsaRegularHours,
+            overtime_hours: flsaOTHours,
+            absence_hours: totalAbsenceHours,
+            days_worked: totalDaysWorked,
+            days_absent: totalDaysAbsent
+          };
+
           const w4 = await client.query(`
             SELECT w4_filing_status AS filing_status, w4_dependents_amount AS dependents_amount,
               w4_other_income AS other_income, w4_deductions AS deductions,
@@ -489,7 +569,7 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
             WHERE employee_id=$1 AND country_code='US' AND is_current=true
           `, [emp.id]);
           result = await calculateUSAW2(client, entryId, emp.id, company_id,
-            parseFloat(emp.salary), emp.pay_frequency, timesheet, w4.rows[0] || {});
+            parseFloat(emp.salary), emp.pay_frequency, flsaTimesheet, w4.rows[0] || {});
         } else {
           // MX_HONORARIOS / US_1099 — gross only, no deductions
           const gross = parseFloat(emp.salary) * (emp.pay_frequency === 'weekly' ? 7/30.4 : 15/30.4);
