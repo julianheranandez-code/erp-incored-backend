@@ -313,4 +313,131 @@ router.get('/:uuid/contracts', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+// POST /api/people/employees/:uuid/contracts — create new contract version
+router.post('/:uuid/contracts', async (req, res, next) => {
+  try {
+    const empResult = await query('SELECT id, company_id FROM employees WHERE uuid=$1', [req.params.uuid]);
+    if (!empResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const { id: empId, company_id } = empResult.rows[0];
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const { contract_type, employment_regime, flsa_classification,
+            work_modality, start_date, end_date, probation_end_date, notes } = req.body;
+    if (!contract_type || !employment_regime || !start_date)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: contract_type, employment_regime, start_date' });
+
+    let newContractData;
+    await withTransaction(async (client) => {
+      const ver = await client.query(
+        'SELECT COALESCE(MAX(version_number),0) AS max_ver FROM employment_contracts WHERE employee_id=$1',
+        [empId]
+      );
+      const newVersion = parseInt(ver.rows[0].max_ver) + 1;
+
+      const prev = await client.query(
+        'SELECT id FROM employment_contracts WHERE employee_id=$1 AND is_current=true',
+        [empId]
+      );
+
+      const newContract = await client.query(`
+        INSERT INTO employment_contracts
+          (employee_id, company_id, contract_type, employment_regime,
+           flsa_classification, work_modality, start_date, end_date,
+           probation_end_date, version_number, is_current, created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11)
+        RETURNING id, uuid, version_number
+      `, [empId, company_id, contract_type, employment_regime,
+          flsa_classification||null, work_modality||'field',
+          start_date, end_date||null, probation_end_date||null,
+          newVersion, req.user.id]);
+      newContractData = newContract.rows[0];
+
+      if (prev.rows[0]) {
+        await client.query(`
+          UPDATE employment_contracts SET is_current=false, superseded_by_id=$1
+          WHERE id=$2
+        `, [newContractData.id, prev.rows[0].id]);
+      }
+
+      await client.query(`
+        INSERT INTO employment_events
+          (employee_id, company_id, event_type, event_date, title, source, actor_id)
+        VALUES ($1,$2,'contract_change',$3,$4,'system',$5)
+      `, [empId, company_id, start_date,
+          'Contract v' + newVersion + ': ' + contract_type + ' / ' + employment_regime,
+          req.user.id]);
+    });
+
+    writeAudit({ userId: req.user.id, action: 'contract_created',
+      entityType: 'employment_contracts', entityId: req.params.uuid,
+      companyId: company_id,
+      newValues: { contract_type, employment_regime, start_date, version: newContractData?.version_number },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    const updated = await query(
+      'SELECT uuid, contract_type, employment_regime, flsa_classification, version_number, is_current FROM employment_contracts WHERE employee_id=$1 AND is_current=true',
+      [empId]
+    );
+    res.status(201).json({ success: true, message: 'Contract version created.', data: updated.rows[0] });
+  } catch(e) { next(e); }
+});
+
+// POST /api/people/employees/:uuid/terminate — terminate employee
+router.post('/:uuid/terminate', async (req, res, next) => {
+  try {
+    const empResult = await query('SELECT id, company_id, status FROM employees WHERE uuid=$1', [req.params.uuid]);
+    if (!empResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    const { id: empId, company_id } = empResult.rows[0];
+
+    if (empResult.rows[0].status === 'terminated')
+      return res.status(400).json({ success: false, error: 'already_terminated' });
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const { termination_date, termination_reason, notes } = req.body;
+    if (!termination_date || !termination_reason)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: termination_date, termination_reason' });
+
+    await withTransaction(async (client) => {
+      await client.query(`
+        UPDATE employees SET status='terminated', termination_date=$1, updated_at=NOW()
+        WHERE id=$2
+      `, [termination_date, empId]);
+
+      await client.query(`
+        UPDATE employment_contracts SET is_current=false, end_date=$1
+        WHERE employee_id=$2 AND is_current=true AND (end_date IS NULL OR end_date > $1)
+      `, [termination_date, empId]);
+
+      await client.query(`
+        UPDATE compensation_records SET end_date=$1
+        WHERE employee_id=$2 AND end_date IS NULL
+      `, [termination_date, empId]);
+
+      await client.query(`
+        INSERT INTO employment_events
+          (employee_id, company_id, event_type, event_date, title, description, source, actor_id)
+        VALUES ($1,$2,'termination',$3,'Employee Terminated',$4,'system',$5)
+      `, [empId, company_id, termination_date,
+          termination_reason + (notes ? ': ' + notes : ''), req.user.id]);
+    });
+
+    writeAudit({ userId: req.user.id, action: 'employee_terminated',
+      entityType: 'employees', entityId: req.params.uuid,
+      companyId: company_id,
+      newValues: { termination_date, termination_reason },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+
+    res.json({ success: true, message: 'Employee terminated.',
+      data: { uuid: req.params.uuid, termination_date, status: 'terminated' }});
+  } catch(e) { next(e); }
+});
+
 module.exports = router;

@@ -159,11 +159,19 @@ router.post('/requests', async (req, res, next) => {
 // POST /api/time/leave/requests/:uuid/approve
 router.post('/requests/:uuid/approve', async (req, res, next) => {
   try {
-    const lr = await query('SELECT * FROM leave_requests WHERE uuid=$1', [req.params.uuid]);
+    // Fetch leave request + leave_type.is_paid for paid/unpaid determination
+    const lr = await query(`
+      SELECT lr.*, lt.is_paid, lt.code AS leave_code, lt.name AS leave_name
+      FROM leave_requests lr
+      JOIN leave_types lt ON lt.id = lr.leave_type_id
+      WHERE lr.uuid=$1
+    `, [req.params.uuid]);
     if (!lr.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
     if (lr.rows[0].status !== 'pending')
       return res.status(400).json({ success: false, error: 'invalid_status',
         message: 'Only pending requests can be approved.' });
+
+    const req_lr = lr.rows[0];
 
     await withTransaction(async (client) => {
       await client.query(`
@@ -178,15 +186,45 @@ router.post('/requests/:uuid/approve', async (req, res, next) => {
           pending_days = GREATEST(0, pending_days - $1),
           updated_at=NOW()
         WHERE employee_id=$2 AND leave_type_id=$3 AND fiscal_year=$4
-      `, [lr.rows[0].days_requested, lr.rows[0].employee_id,
-          lr.rows[0].leave_type_id, new Date().getFullYear()]);
+      `, [req_lr.days_requested, req_lr.employee_id,
+          req_lr.leave_type_id, new Date().getFullYear()]);
+
+      // P1-01: Leave → Attendance integration
+      // Paid leave (is_paid=true): create attendance_records with is_day_off=true
+      //   → timesheet recalculate: daysAbsent++ but NOT absenceHours (is_day_off branch)
+      //   → payroll absenceDeduction = days_absent * dailyRate (only for !punch_in branch)
+      //   → is_day_off=true skips absenceHours → no deduction ✅
+      // Unpaid leave (is_paid=false): no attendance record created
+      //   → no punch_in → absence branch → absenceDeduction applies ✅
+      if (req_lr.is_paid) {
+        const start = new Date(req_lr.start_date);
+        const end   = new Date(req_lr.end_date);
+        const note  = req_lr.leave_name + ' (' + req_lr.leave_code + ')';
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+          const workDate = d.toISOString().slice(0, 10);
+          await client.query(`
+            INSERT INTO attendance_records
+              (employee_id, company_id, work_date, is_day_off,
+               attendance_source, notes)
+            VALUES ($1,$2,$3,true,'leave',$4)
+            ON CONFLICT (employee_id, work_date) DO UPDATE SET
+              is_day_off=true, attendance_source='leave',
+              notes=$4, updated_at=NOW()
+          `, [req_lr.employee_id, req_lr.company_id, workDate, note]);
+        }
+      }
     });
 
     writeAudit({ userId: req.user.id, action: 'leave_request_approved',
       entityType: 'leave_requests', entityId: req.params.uuid,
-      companyId: lr.rows[0].company_id, ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
+      companyId: req_lr.company_id,
+      newValues: { is_paid: req_lr.is_paid,
+                   start_date: req_lr.start_date, end_date: req_lr.end_date },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(()=>{});
 
-    res.json({ success: true, message: 'Leave request approved.' });
+    res.json({ success: true, message: 'Leave request approved.',
+      data: { is_paid: req_lr.is_paid,
+              attendance_days_created: req_lr.is_paid ? parseFloat(req_lr.days_requested) : 0 }});
   } catch(e) { next(e); }
 });
 

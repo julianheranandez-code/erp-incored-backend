@@ -538,6 +538,25 @@ router.post('/salary-history', async (req, res, next) => {
       `, [parseFloat(base_salary), currency, payroll_frequency,
           parseInt(employee_id), parseInt(company_id)]);
 
+      // P1-02: Sync compensation_records (canonical payroll source)
+      // Close previous active record for this employee/company
+      await client.query(`
+        UPDATE compensation_records SET end_date = $1
+        WHERE employee_id = $2 AND company_id = $3
+          AND end_date IS NULL AND effective_date < $1
+      `, [effective_date, parseInt(employee_id), parseInt(company_id)]);
+
+      // Insert new active compensation_record with effective date
+      await client.query(`
+        INSERT INTO compensation_records
+          (employee_id, company_id, amount, currency, salary_type,
+           pay_frequency, effective_date, reason, notes, created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT DO NOTHING
+      `, [parseInt(employee_id), parseInt(company_id), parseFloat(base_salary),
+          currency, salary_type, payroll_frequency,
+          effective_date, change_reason||null, notes||null, hist.rows[0].created_by]);
+
       return hist.rows[0];
     });
 
