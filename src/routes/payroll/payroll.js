@@ -137,7 +137,10 @@ async function calculateMXIMSS(client, entryId, employeeId, companyId, runId, sa
   const overtimePay = (timesheet.overtime_hours_double || 0) * dailyRate / 8 * 2
                     + (timesheet.overtime_hours_triple || 0) * dailyRate / 8 * 3;
   const absenceDeduction = (timesheet.days_absent || 0) * dailyRate;
-  const grossPay = periodBase + overtimePay - absenceDeduction;
+  // holiday_pay: statutory premium (2×) pre-calculated, passed via timesheet
+  // periodBase already contains ordinary salary for the worked holiday day
+  const holidayPay = parseFloat(timesheet.holiday_pay || 0);
+  const grossPay = periodBase + overtimePay + holidayPay - absenceDeduction;
   const monthlyGross = salary;
   const { sbc_daily, sbc_monthly } = calculateSBC(monthlyGross);
   const imssEmployee = calculateIMSSEmployee(sbc_monthly) * periodFactor;
@@ -426,24 +429,55 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
         timesheet.overtime_hours_double = Math.min(totalOT, 9);
         timesheet.overtime_hours_triple = Math.max(0, totalOT - 9);
 
+        // Holiday classification — MX statutory mandatory only
+        // Source of truth: work_calendar_holiday_id + is_statutory=true
+        // Legacy records (work_calendar_holiday_id IS NULL) → holiday_pay=0
+        const holidayResult = await client.query(`
+          SELECT COALESCE(SUM(ar.hours_worked), 0) AS statutory_holiday_hours
+          FROM attendance_records ar
+          JOIN work_calendar_holidays wch
+            ON wch.id = ar.work_calendar_holiday_id
+          WHERE ar.employee_id = $1
+            AND ar.work_date BETWEEN $2 AND $3
+            AND ar.work_calendar_holiday_id IS NOT NULL
+            AND wch.is_statutory = true
+            AND wch.country_code = 'MX'
+            AND wch.company_id = $4
+        `, [emp.id, start_date, end_date, company_id]);
+
+        const statutoryHolidayHours = parseFloat(holidayResult.rows[0].statutory_holiday_hours || 0);
+
+        // holiday_pay = premium only (2×); periodBase already covers base salary
+        let holidayPay = 0;
+        if (employment_regime === 'MX_IMSS' && statutoryHolidayHours > 0) {
+          const dailyRate = parseFloat(emp.salary) / 30.4;
+          const hourlyRate = dailyRate / 8;
+          holidayPay = statutoryHolidayHours * hourlyRate * 2;
+        }
+
         // Create entry shell
         const entry = await client.query(`
           INSERT INTO payroll_entries
             (payroll_run_id, employee_id, company_id, employment_regime,
              regular_hours, overtime_hours_double, overtime_hours_triple,
-             absence_hours, days_worked, days_absent, currency)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             absence_hours, days_worked, days_absent, currency,
+             holiday_hours, holiday_pay)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
           RETURNING id
         `, [runId, emp.id, company_id, employment_regime,
             timesheet.regular_hours, timesheet.overtime_hours_double,
             timesheet.overtime_hours_triple, timesheet.absence_hours,
             timesheet.days_worked, timesheet.days_absent,
-            emp.comp_currency || 'MXN']);
+            emp.comp_currency || 'MXN',
+            statutoryHolidayHours.toFixed(2),
+            holidayPay.toFixed(2)]);
 
         const entryId = entry.rows[0].id;
         let result;
 
         if (employment_regime === 'MX_IMSS') {
+          // Pass holiday_pay to engine via timesheet object (augments grossPay)
+          timesheet.holiday_pay = holidayPay;
           result = await calculateMXIMSS(client, entryId, emp.id, company_id,
             runId, parseFloat(emp.salary), emp.pay_frequency, timesheet);
         } else if (employment_regime === 'US_W2') {

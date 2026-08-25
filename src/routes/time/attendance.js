@@ -103,6 +103,22 @@ router.post('/:employee_uuid/punch-in', async (req, res, next) => {
     const today = new Date().toISOString().slice(0,10);
     const now = new Date().toISOString();
 
+    // Holiday calendar auto-resolution — calendar-driven, no manual selector
+    // Validates company_id to prevent cross-company holiday assignment
+    const holidayLookup = await query(`
+      SELECT wch.id, wch.name, wch.holiday_type, wch.is_statutory, wch.is_paid
+      FROM work_calendar_holidays wch
+      JOIN work_calendars wc ON wc.id = wch.work_calendar_id
+      WHERE wch.holiday_date = $1
+        AND wch.company_id = $2
+        AND wc.company_id = $2
+        AND wc.is_active = true
+        AND EXTRACT(YEAR FROM wch.holiday_date::date) = EXTRACT(YEAR FROM $1::date)
+      LIMIT 1
+    `, [today, company_id]);
+    const isHoliday = !!holidayLookup.rows[0];
+    const holidayId = holidayLookup.rows[0]?.id || null;
+
     // Check not already punched in
     const existing = await query(
       'SELECT id, punch_in, punch_out FROM attendance_records WHERE employee_id=$1 AND work_date=$2',
@@ -127,11 +143,13 @@ router.post('/:employee_uuid/punch-in', async (req, res, next) => {
       const ins = await query(`
         INSERT INTO attendance_records
           (employee_id, company_id, work_date, punch_in, punch_in_by,
-           location_in, attendance_source, source_reference, notes)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           location_in, attendance_source, source_reference, notes,
+           is_holiday, work_calendar_holiday_id)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
         RETURNING uuid
       `, [empId, company_id, today, now, req.user.id,
-          location||null, attendance_source, source_reference||null, notes||null]);
+          location||null, attendance_source, source_reference||null, notes||null,
+          isHoliday, holidayId]);
       record = ins.rows[0];
     }
 
@@ -187,7 +205,7 @@ router.post('/:employee_uuid/punch-out', async (req, res, next) => {
 // PATCH /api/time/attendance/:uuid/correct
 router.patch('/:uuid/correct', async (req, res, next) => {
   try {
-    const { punch_in, punch_out, notes, reason } = req.body;
+    const { punch_in, punch_out, notes, reason, work_calendar_holiday_id } = req.body;
     if (!reason) return res.status(400).json({ success: false, error: 'reason required' });
 
     // Fetch record + employee company
@@ -221,14 +239,19 @@ router.patch('/:uuid/correct', async (req, res, next) => {
       hoursWorked = ms > 0 ? (ms / 3600000).toFixed(2) : 0;
     }
 
-    await query(
-      `UPDATE attendance_records
+    const updateFields = [newPunchIn, newPunchOut, hoursWorked,
+       notes !== undefined ? notes : rec.notes];
+    let updateSql = `UPDATE attendance_records
        SET punch_in=$1, punch_out=$2, hours_worked=$3,
-           notes=$4, attendance_source='manual'
-       WHERE id=$5`,
-      [newPunchIn, newPunchOut, hoursWorked,
-       notes !== undefined ? notes : rec.notes, rec.id]
-    );
+           notes=$4, attendance_source='manual'`;
+    if (work_calendar_holiday_id !== undefined) {
+      updateSql += `, is_holiday=$5, work_calendar_holiday_id=$6 WHERE id=$7`;
+      updateFields.push(work_calendar_holiday_id !== null, work_calendar_holiday_id, rec.id);
+    } else {
+      updateSql += ` WHERE id=$5`;
+      updateFields.push(rec.id);
+    }
+    await query(updateSql, updateFields);
 
     writeAudit({
       userId: req.user.id, action: 'attendance_corrected',
