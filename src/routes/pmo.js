@@ -565,9 +565,16 @@ router.get('/crews', async (req, res, next) => {
     let idx = 1;
 
     if (authorizedCompanyId) { conditions.push(`c.company_id = $${idx++}`); values.push(authorizedCompanyId); }
-    if (project_id)          { conditions.push(`c.project_id = $${idx++}`); values.push(parseInt(project_id)); }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    // When project_id is provided, return crews assigned to that project
+    // OR unassigned crews (pool available for assignment) — both are selectable
+    let where = '';
+    if (conditions.length && project_id) {
+      where = `WHERE ${conditions.join(' AND ')} AND (c.project_id = $${idx++} OR c.project_id IS NULL)`;
+      values.push(parseInt(project_id));
+    } else if (conditions.length) {
+      where = `WHERE ${conditions.join(' AND ')}`;
+    }
 
     const result = await query(`
       SELECT c.*,
