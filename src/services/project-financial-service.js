@@ -141,6 +141,13 @@ async function getProjectFinancialSummary(projectId) {
   const expensesReimbursed = parseFloat(expReimbursedAgg.rows[0].expenses_reimbursed);
   const actualCashCost     = apCashPaid + expensesReimbursed;
 
+  // Labor cost (from certified payroll — must be defined before totalExposure)
+  const totalLaborCost      = parseFloat(laborAgg?.rows[0]?.total_labor_cost    || 0);
+  const totalGrossPayLabor  = parseFloat(laborAgg?.rows[0]?.total_gross_pay     || 0);
+  const totalEmployerBurden = parseFloat(laborAgg?.rows[0]?.total_employer_burden || 0);
+  const laborRunsCount      = parseInt(laborAgg?.rows[0]?.payroll_runs_count    || 0);
+  const laborEmployeesCount = parseInt(laborAgg?.rows[0]?.employees_count       || 0);
+
   // TOTAL FINANCIAL EXPOSURE (no double counting) — includes certified labor costs
   const totalExposure    = committedCost + actualCashCost + totalLaborCost;
 
@@ -155,13 +162,6 @@ async function getProjectFinancialSummary(projectId) {
     ? Math.round((actualMargin / contractValue) * 1000) / 10 : null;
 
   const financialHealth  = calculateFinancialHealth(actualCashCost, budgetCost, actualMargin);
-
-  // Labor cost (from certified payroll — project_labor_costs)
-  const totalLaborCost      = parseFloat(laborAgg?.rows[0]?.total_labor_cost    || 0);
-  const totalGrossPayLabor  = parseFloat(laborAgg?.rows[0]?.total_gross_pay     || 0);
-  const totalEmployerBurden = parseFloat(laborAgg?.rows[0]?.total_employer_burden || 0);
-  const laborRunsCount      = parseInt(laborAgg?.rows[0]?.payroll_runs_count    || 0);
-  const laborEmployeesCount = parseInt(laborAgg?.rows[0]?.employees_count       || 0);
 
   // Revenue metrics (Sprint 4B — defined before use)
   const invoicedRevenue    = parseFloat(revenueAgg.rows[0]?.invoiced_revenue || 0);
