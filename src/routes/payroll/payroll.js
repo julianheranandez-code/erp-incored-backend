@@ -481,6 +481,11 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
           timesheet.holiday_pay = holidayPay;
           result = await calculateMXIMSS(client, entryId, emp.id, company_id,
             runId, parseFloat(emp.salary), emp.pay_frequency, timesheet);
+          // Persist employer_burden per entry (certified engine result, no formula change)
+          await client.query(
+            'UPDATE payroll_entries SET total_employer_burden=$1 WHERE id=$2',
+            [parseFloat(result.employer_burden || 0).toFixed(2), entryId]
+          );
         } else if (employment_regime === 'US_W2') {
           // FLSA classification check — NULL is not a valid default
           if (!emp.flsa_classification) {
@@ -570,12 +575,20 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
           `, [emp.id]);
           result = await calculateUSAW2(client, entryId, emp.id, company_id,
             parseFloat(emp.salary), emp.pay_frequency, flsaTimesheet, w4.rows[0] || {});
+          // Persist employer_burden per entry
+          await client.query(
+            'UPDATE payroll_entries SET total_employer_burden=$1 WHERE id=$2',
+            [parseFloat(result.employer_burden || 0).toFixed(2), entryId]
+          );
         } else {
           // MX_HONORARIOS / US_1099 — gross only, no deductions
           const gross = parseFloat(emp.salary) * (emp.pay_frequency === 'weekly' ? 7/30.4 : 15/30.4);
           await client.query(`
             UPDATE payroll_entries SET gross_pay=$1, net_pay=$1, updated_at=NOW() WHERE id=$2
           `, [gross, entryId]);
+          await client.query(
+            'UPDATE payroll_entries SET total_employer_burden=0 WHERE id=$1', [entryId]
+          );
           result = { gross_pay: gross, net_pay: gross, total_deductions: 0, employer_burden: 0 };
         }
 
@@ -798,6 +811,181 @@ router.get('/stubs/:employee_uuid', async (req, res, next) => {
       WHERE ${conditions.join(' AND ')}
       ORDER BY ps.stub_date DESC
     `, values);
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch(e) { next(e); }
+});
+
+// POST /api/payroll/runs/:uuid/generate-labor-costs
+// Distributes approved payroll employer cost to projects via employee_project_allocations
+router.post('/runs/:uuid/generate-labor-costs', async (req, res, next) => {
+  try {
+    // Auth: validate company access
+    const runResult = await query(`
+      SELECT pr.id, pr.uuid, pr.company_id, pr.status, pr.currency,
+        pp.start_date, pp.end_date
+      FROM payroll_runs pr
+      JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
+      WHERE pr.uuid = $1
+    `, [req.params.uuid]);
+    if (!runResult.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const run = runResult.rows[0];
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(run.company_id))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // T5/T6: Only approved payroll generates labor costs
+    if (run.status !== 'approved')
+      return res.status(400).json({ success: false, error: 'invalid_status',
+        message: `Labor costs can only be generated for approved payroll runs. Current status: ${run.status}` });
+
+    // T13: Cancelled check (belt+suspenders — already excluded by approved check above)
+    if (run.status === 'cancelled')
+      return res.status(400).json({ success: false, error: 'cancelled_run',
+        message: 'Cannot generate labor costs for a cancelled payroll run.' });
+
+    // Get all payroll entries for this run
+    const entries = await query(`
+      SELECT pe.id, pe.uuid AS entry_uuid, pe.employee_id, pe.company_id,
+        pe.gross_pay, pe.total_employer_burden, pe.currency, pe.employment_regime
+      FROM payroll_entries pe
+      WHERE pe.payroll_run_id = $1 AND pe.company_id = $2
+    `, [run.id, run.company_id]);
+
+    const results = { created: 0, updated: 0, skipped: 0, blocked: 0, warnings: [] };
+
+    await withTransaction(async (client) => {
+      for (const entry of entries.rows) {
+        // Validate employee company isolation
+        const empCheck = await client.query(
+          'SELECT id, company_id FROM employees WHERE id=$1 AND company_id=$2',
+          [entry.employee_id, run.company_id]
+        );
+        if (!empCheck.rows[0]) {
+          results.warnings.push({ employee_id: entry.employee_id, reason: 'employee_company_mismatch' });
+          results.skipped++;
+          continue;
+        }
+
+        // Find valid allocations for this employee during payroll period
+        const allocations = await client.query(`
+          SELECT epa.id AS allocation_id, epa.project_id, epa.allocation_percent,
+            epa.company_id AS alloc_company_id, p.company_id AS project_company_id,
+            p.currency AS project_currency
+          FROM employee_project_allocations epa
+          JOIN projects p ON p.id = epa.project_id
+          WHERE epa.employee_id = $1
+            AND epa.company_id = $2
+            AND epa.start_date <= $3
+            AND (epa.end_date IS NULL OR epa.end_date >= $4)
+        `, [entry.employee_id, run.company_id, run.end_date, run.start_date]);
+
+        if (allocations.rows.length === 0) {
+          results.warnings.push({ employee_id: entry.employee_id, reason: 'no_allocation' });
+          results.skipped++;
+          continue;
+        }
+
+        // T3/T12: Validate total allocation <= 100%
+        const totalPct = allocations.rows.reduce((s, a) => s + parseFloat(a.allocation_percent), 0);
+        if (totalPct > 100.001) {
+          results.warnings.push({ employee_id: entry.employee_id,
+            reason: 'allocation_exceeds_100', total_percent: totalPct });
+          results.blocked++;
+          continue;
+        }
+
+        const grossPay = parseFloat(entry.gross_pay || 0);
+        const employerBurden = parseFloat(entry.total_employer_burden || 0);
+        const totalLaborCost = grossPay + employerBurden;
+        const currency = entry.currency || run.currency || 'MXN';
+
+        for (const alloc of allocations.rows) {
+          // T4/T8: Cross-company isolation
+          if (alloc.project_company_id !== run.company_id) {
+            results.warnings.push({ employee_id: entry.employee_id,
+              project_id: alloc.project_id, reason: 'cross_company_project' });
+            continue;
+          }
+
+          const pct = parseFloat(alloc.allocation_percent) / 100;
+          const allocGross = parseFloat((grossPay * pct).toFixed(2));
+          const allocBurden = parseFloat((employerBurden * pct).toFixed(2));
+          const allocTotal = parseFloat((totalLaborCost * pct).toFixed(2));
+
+          // T7/T8: Idempotent upsert
+          const upsert = await client.query(`
+            INSERT INTO project_labor_costs
+              (project_id, company_id, employee_id, payroll_run_id, payroll_entry_id,
+               allocation_id, allocation_percent, gross_pay, employer_burden,
+               total_labor_cost, period_start, period_end, currency, created_by)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+            ON CONFLICT (payroll_entry_id, project_id) DO UPDATE SET
+              allocation_percent = EXCLUDED.allocation_percent,
+              gross_pay = EXCLUDED.gross_pay,
+              employer_burden = EXCLUDED.employer_burden,
+              total_labor_cost = EXCLUDED.total_labor_cost
+            RETURNING (xmax = 0) AS inserted
+          `, [alloc.project_id, run.company_id, entry.employee_id,
+              run.id, entry.id, alloc.allocation_id,
+              parseFloat(alloc.allocation_percent), allocGross, allocBurden,
+              allocTotal, run.start_date, run.end_date, currency, req.user.id]);
+
+          if (upsert.rows[0]?.inserted) results.created++;
+          else results.updated++;
+        }
+      }
+    });
+
+    writeAudit({ userId: req.user.id, action: 'labor_costs_generated',
+      entityType: 'payroll_runs', entityId: req.params.uuid,
+      companyId: run.company_id,
+      newValues: { created: results.created, updated: results.updated,
+                   skipped: results.skipped, blocked: results.blocked },
+      ip: req.ip, userAgent: req.get('user-agent') }).catch(() => {});
+
+    res.json({ success: true, message: 'Labor costs generated.',
+      data: { payroll_run_uuid: req.params.uuid,
+        period: { start: run.start_date, end: run.end_date },
+        ...results }});
+  } catch(e) { next(e); }
+});
+
+// GET /api/payroll/labor-costs
+router.get('/labor-costs', async (req, res, next) => {
+  try {
+    const { company_id, project_id, employee_id, payroll_run_uuid, period_start, period_end } = req.query;
+    const authorizedCid = company_id ? parseInt(company_id) : req.user.company_id;
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(authorizedCid))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const conditions = ['plc.company_id = $1'];
+    const values = [authorizedCid];
+    let idx = 2;
+
+    if (project_id)        { conditions.push(`plc.project_id = $${idx++}`); values.push(parseInt(project_id)); }
+    if (employee_id)       { conditions.push(`plc.employee_id = $${idx++}`); values.push(parseInt(employee_id)); }
+    if (payroll_run_uuid)  { conditions.push(`pr.uuid = $${idx++}`); values.push(payroll_run_uuid); }
+    if (period_start)      { conditions.push(`plc.period_start >= $${idx++}`); values.push(period_start); }
+    if (period_end)        { conditions.push(`plc.period_end <= $${idx++}`); values.push(period_end); }
+
+    const result = await query(`
+      SELECT plc.uuid, plc.project_id, plc.employee_id,
+        plc.allocation_percent, plc.gross_pay, plc.employer_burden,
+        plc.total_labor_cost, plc.period_start, plc.period_end, plc.currency,
+        plc.created_at,
+        p.name AS project_name,
+        CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal,e.last_name,'')) AS employee_name,
+        pr.uuid AS payroll_run_uuid, pr.run_number, pr.status AS payroll_status
+      FROM project_labor_costs plc
+      JOIN projects p ON p.id = plc.project_id
+      JOIN employees e ON e.id = plc.employee_id
+      JOIN payroll_runs pr ON pr.id = plc.payroll_run_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY plc.period_start DESC, p.name, e.last_name_paternal
+    `, values);
+
     res.json({ success: true, count: result.rows.length, data: result.rows });
   } catch(e) { next(e); }
 });

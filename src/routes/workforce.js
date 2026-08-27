@@ -462,6 +462,39 @@ router.post('/project-allocation', async (req, res, next) => {
         message: 'Required: employee_id, project_id, company_id, start_date' });
     }
 
+    // Cross-company isolation: employee, project, allocation must all be same company
+    const empValidation = await query(
+      'SELECT id, company_id FROM employees WHERE id=$1', [parseInt(employee_id)]);
+    if (!empValidation.rows[0])
+      return res.status(404).json({ success: false, error: 'employee_not_found' });
+    if (empValidation.rows[0].company_id !== parseInt(company_id))
+      return res.status(400).json({ success: false, error: 'cross_company_employee',
+        message: 'Employee does not belong to the specified company.' });
+
+    const projValidation = await query(
+      'SELECT id, company_id FROM projects WHERE id=$1', [parseInt(project_id)]);
+    if (!projValidation.rows[0])
+      return res.status(404).json({ success: false, error: 'project_not_found' });
+    if (projValidation.rows[0].company_id !== parseInt(company_id))
+      return res.status(400).json({ success: false, error: 'cross_company_project',
+        message: 'Project does not belong to the specified company.' });
+
+    // Overlap + total allocation % validation
+    const effective_end = end_date || '9999-12-31';
+    const existing = await query(`
+      SELECT id, project_id, allocation_percent, start_date, end_date
+      FROM employee_project_allocations
+      WHERE employee_id = $1
+        AND company_id = $2
+        AND start_date <= $3
+        AND (end_date IS NULL OR end_date >= $4)
+    `, [parseInt(employee_id), parseInt(company_id), effective_end, start_date]);
+
+    const currentTotal = existing.rows.reduce((s, a) => s + parseFloat(a.allocation_percent), 0);
+    if (currentTotal + parseFloat(allocation_percent) > 100.001)
+      return res.status(400).json({ success: false, error: 'allocation_exceeds_100',
+        message: `Total allocation would exceed 100%. Current: ${currentTotal.toFixed(1)}%, Adding: ${allocation_percent}%, Total would be: ${(currentTotal + parseFloat(allocation_percent)).toFixed(1)}%` });
+
     const result = await query(`
       INSERT INTO employee_project_allocations (
         employee_id, project_id, company_id, allocation_percent,
@@ -814,6 +847,42 @@ router.get('/dashboard-summary', async (req, res, next) => {
       }
     });
   } catch (error) { next(error); }
+});
+
+// PATCH /api/workforce/project-allocation/:id — deactivate or update allocation
+router.patch('/project-allocation/:id', async (req, res, next) => {
+  try {
+    const alloc = await query(
+      'SELECT id, company_id, employee_id FROM employee_project_allocations WHERE id=$1',
+      [parseInt(req.params.id)]
+    );
+    if (!alloc.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const authorizedCid = getAuthorizedCompanyId(req.user, req.query.company_id || alloc.rows[0].company_id);
+    if (req.user.role !== 'super_admin' && alloc.rows[0].company_id !== authorizedCid)
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const { end_date, allocation_percent, notes } = req.body;
+    const fields = [];
+    const values = [];
+    let idx = 1;
+
+    if (end_date !== undefined)          { fields.push(`end_date = $${idx++}`); values.push(end_date); }
+    if (allocation_percent !== undefined){ fields.push(`allocation_percent = $${idx++}`); values.push(parseFloat(allocation_percent)); }
+    if (notes !== undefined)             { fields.push(`notes = $${idx++}`); values.push(notes); }
+
+    if (!fields.length)
+      return res.status(400).json({ success: false, error: 'no_fields', message: 'Provide end_date, allocation_percent, or notes.' });
+
+    fields.push(`updated_at = NOW()`);
+    values.push(parseInt(req.params.id));
+
+    const result = await query(
+      `UPDATE employee_project_allocations SET ${fields.join(', ')} WHERE id=$${idx} RETURNING *`,
+      values
+    );
+    res.json({ success: true, message: 'Allocation updated.', data: result.rows[0] });
+  } catch(e) { next(e); }
 });
 
 module.exports = router;
