@@ -53,7 +53,7 @@ function calculateFinancialHealth(actualCashCost, budgetCost, actualMargin) {
 
 // ─── CORE FINANCIAL SUMMARY ───────────────────────────────────
 async function getProjectFinancialSummary(projectId) {
-  const [project, ipoAgg, apBillsAgg, expCommittedAgg, apPaymentsAgg, expReimbursedAgg, revenueAgg] = await Promise.all([
+  const [project, ipoAgg, apBillsAgg, expCommittedAgg, apPaymentsAgg, expReimbursedAgg, revenueAgg, laborAgg] = await Promise.all([
 
     query(`
       SELECT id, code, name, company_id, currency, status,
@@ -109,6 +109,18 @@ async function getProjectFinancialSummary(projectId) {
           WHERE ai.project_id = $1), 0) AS collected_revenue
       FROM ar_invoices i
       WHERE i.project_id = $1
+    `, [projectId]),
+
+  // Labor costs from certified payroll runs
+    query(`
+      SELECT
+        COALESCE(SUM(plc.total_labor_cost), 0)     AS total_labor_cost,
+        COALESCE(SUM(plc.gross_pay), 0)             AS total_gross_pay,
+        COALESCE(SUM(plc.employer_burden), 0)       AS total_employer_burden,
+        COUNT(DISTINCT plc.payroll_run_id)          AS payroll_runs_count,
+        COUNT(DISTINCT plc.employee_id)             AS employees_count
+      FROM project_labor_costs plc
+      WHERE plc.project_id = $1
     `, [projectId])
   ]);
 
@@ -129,20 +141,27 @@ async function getProjectFinancialSummary(projectId) {
   const expensesReimbursed = parseFloat(expReimbursedAgg.rows[0].expenses_reimbursed);
   const actualCashCost     = apCashPaid + expensesReimbursed;
 
-  // TOTAL FINANCIAL EXPOSURE (no double counting)
-  const totalExposure    = committedCost + actualCashCost;
+  // TOTAL FINANCIAL EXPOSURE (no double counting) — includes certified labor costs
+  const totalExposure    = committedCost + actualCashCost + totalLaborCost;
 
   // REMAINING BUDGET uses highest exposure
   const remainingBudget  = budgetCost > 0 ? budgetCost - totalExposure : null;
 
   const expectedMargin   = contractValue - budgetCost;
-  const actualMargin     = contractValue - actualCashCost;
+  const actualMargin     = contractValue - actualCashCost - totalLaborCost;
   const cashConsumptionPct = budgetCost > 0
     ? Math.round((actualCashCost / budgetCost) * 1000) / 10 : null;
   const marginPct = contractValue > 0
     ? Math.round((actualMargin / contractValue) * 1000) / 10 : null;
 
   const financialHealth  = calculateFinancialHealth(actualCashCost, budgetCost, actualMargin);
+
+  // Labor cost (from certified payroll — project_labor_costs)
+  const totalLaborCost      = parseFloat(laborAgg?.rows[0]?.total_labor_cost    || 0);
+  const totalGrossPayLabor  = parseFloat(laborAgg?.rows[0]?.total_gross_pay     || 0);
+  const totalEmployerBurden = parseFloat(laborAgg?.rows[0]?.total_employer_burden || 0);
+  const laborRunsCount      = parseInt(laborAgg?.rows[0]?.payroll_runs_count    || 0);
+  const laborEmployeesCount = parseInt(laborAgg?.rows[0]?.employees_count       || 0);
 
   // Revenue metrics (Sprint 4B — defined before use)
   const invoicedRevenue    = parseFloat(revenueAgg.rows[0]?.invoiced_revenue || 0);
@@ -185,6 +204,14 @@ async function getProjectFinancialSummary(projectId) {
     margin_percent:                 marginPct,
     cash_consumption_percent:       cashConsumptionPct,
     financial_health:               financialHealth,
+    // Labor costs from certified payroll
+    labor_cost: {
+      total_labor_cost:      totalLaborCost,
+      total_gross_pay:       totalGrossPayLabor,
+      total_employer_burden: totalEmployerBurden,
+      payroll_runs_count:    laborRunsCount,
+      employees_count:       laborEmployeesCount,
+    },
     // Revenue metrics (Sprint 4B)
     invoiced_revenue:               invoicedRevenue,
     collected_revenue:              collectedRevenue,

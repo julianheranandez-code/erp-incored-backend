@@ -937,6 +937,38 @@ router.post('/runs/:uuid/generate-labor-costs', async (req, res, next) => {
       }
     });
 
+    // Update project_budget.actual_amount for category='labor' per affected project
+    // Non-fatal: if project_budget row missing, skip silently
+    try {
+      const affectedProjects = await query(`
+        SELECT DISTINCT project_id, company_id,
+          SUM(total_labor_cost) AS total_labor
+        FROM project_labor_costs
+        WHERE payroll_run_id = $1
+        GROUP BY project_id, company_id
+      `, [run.id]);
+
+      for (const proj of affectedProjects.rows) {
+        const allLabor = await query(`
+          SELECT COALESCE(SUM(total_labor_cost),0) AS total
+          FROM project_labor_costs
+          WHERE project_id=$1 AND company_id=$2
+        `, [proj.project_id, proj.company_id]);
+
+        await query(`
+          INSERT INTO project_budget
+            (project_id, company_id, category, actual_amount,
+             budgeted_amount, committed_amount, currency, created_by)
+          VALUES ($1,$2,'labor',$3,0,0,'USD',$4)
+          ON CONFLICT (project_id, category) DO UPDATE SET
+            actual_amount = $3, updated_at = NOW()
+        `, [proj.project_id, proj.company_id,
+            parseFloat(allLabor.rows[0].total).toFixed(2), req.user.id]);
+      }
+    } catch(budgetErr) {
+      console.error('project_budget labor update failed (non-fatal):', budgetErr.message);
+    }
+
     writeAudit({ userId: req.user.id, action: 'labor_costs_generated',
       entityType: 'payroll_runs', entityId: req.params.uuid,
       companyId: run.company_id,
