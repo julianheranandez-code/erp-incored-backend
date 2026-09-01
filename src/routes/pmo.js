@@ -580,7 +580,9 @@ router.get('/crews', async (req, res, next) => {
       SELECT c.*,
         p.name AS project_name,
         CONCAT(u.first_name,' ',u.last_name) AS supervisor_name,
-        sc.name AS subcontractor_name
+        u.email AS supervisor_email,
+        sc.name AS subcontractor_name,
+        (SELECT COUNT(*) FROM project_activities pa WHERE pa.crew_id = c.id) AS activities_count
       FROM project_crews c
       LEFT JOIN projects p  ON p.id = c.project_id
       LEFT JOIN users u    ON u.id = c.supervisor_id

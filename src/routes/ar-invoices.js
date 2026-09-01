@@ -611,13 +611,13 @@ router.put('/:id', async (req, res, next) => {
     }
 
     const allowed = [
-      'client_id','project_id','client_po_id','description','notes',
+      'client_id','project_id','client_po_id','client_po_reference','description','notes',
       'subtotal','tax_percent','tax_amount','total_amount','currency',
       'exchange_rate','issue_date','due_date','payment_terms',
-      'discount_percent','discount_amount','discount_days',
+      'discount_percent','discount_amount','discount_days','discount_deadline_date',
       'retainage_percent','retainage_amount','retainage_release_days',
       'project_period_start','project_period_end','project_week_number',
-      'task_list_number','cfdi_uuid','cfdi_xml_url'
+      'task_list_number','cfdi_uuid','cfdi_xml_url','deliverable_id'
     ];
     const fields = [];
     const params = [];
