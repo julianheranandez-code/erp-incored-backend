@@ -74,6 +74,9 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   'https://erp.incored.com.mx',
   'https://incored.com.mx',
+  'https://incorederp.com',
+  'https://www.incorederp.com',
+  'https://incored-julian-erp.lovable.app',
   'http://localhost:3000',   // dev
   'http://localhost:5173',   // Vite dev
 ].filter(Boolean);
