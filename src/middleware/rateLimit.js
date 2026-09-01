@@ -15,7 +15,7 @@ const windowMs = parseInt(RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000; // 15 min
  */
 const generalLimiter = rateLimit({
   windowMs,
-  max: parseInt(RATE_LIMIT_MAX_REQUESTS) || 100,
+  max: parseInt(RATE_LIMIT_MAX_REQUESTS) || 500,
   standardHeaders: true,
   legacyHeaders: false,
   message: {
