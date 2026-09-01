@@ -213,7 +213,12 @@ router.get('/approvals', async (req, res, next) => {
     const values = [];
     let idx = 1;
 
-    if (companyId) { conditions.push(`r.company_id=$${idx++}`); values.push(companyId); }
+    // Company isolation: always require company_id — super_admin must pass it explicitly
+    if (!companyId)
+      return res.status(400).json({ success: false, error: 'company_id_required',
+        message: 'company_id is required.' });
+    conditions.push(`r.company_id=$${idx++}`); values.push(companyId);
+
     if (req.query.status) { conditions.push(`r.status=$${idx++}`); values.push(req.query.status); }
     if (req.query.approval_type) { conditions.push(`r.approval_type=$${idx++}`); values.push(req.query.approval_type); }
 

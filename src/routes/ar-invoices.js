@@ -91,7 +91,7 @@ router.get('/', async (req, res, next) => {
 // ─── GET /api/ar-invoices/:id ─────────────────────────────────
 router.get('/:id', async (req, res, next) => {
   try {
-    const [invoice, payments] = await Promise.all([
+    const [invoice, payments, items] = await Promise.all([
       query(`
         SELECT i.*,
           c.name AS client_name, c.primary_contact_email,
@@ -105,13 +105,23 @@ router.get('/:id', async (req, res, next) => {
         WHERE i.id = $1
       `, [parseInt(req.params.id)]),
       query(`SELECT * FROM ar_payments WHERE invoice_id=$1 ORDER BY payment_date DESC`,
-            [parseInt(req.params.id)])
+            [parseInt(req.params.id)]),
+      query(`
+        SELECT aii.*, rci.code AS item_code, rci.subcategory, rci.unit
+        FROM ar_invoice_items aii
+        LEFT JOIN rate_card_items rci ON rci.id = aii.rate_card_item_id
+        WHERE aii.invoice_id=$1
+        ORDER BY aii.id ASC
+      `, [parseInt(req.params.id)])
     ]);
 
     if (!invoice.rows[0])
       return res.status(404).json({ success: false, error: 'not_found' });
 
-    res.json({ success: true, data: { invoice: invoice.rows[0], payments: payments.rows }});
+    res.json({ success: true, data: {
+      invoice: { ...invoice.rows[0], items: items.rows },
+      payments: payments.rows
+    }});
   } catch(error) { next(error); }
 });
 
