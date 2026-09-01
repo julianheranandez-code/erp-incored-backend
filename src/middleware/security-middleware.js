@@ -78,6 +78,8 @@ const ALLOWED_ORIGINS = [
   'https://erp.incored.com.mx',
   'https://incored.com.mx',
   'https://incored-julian-erp.lovable.app',
+  'https://incorederp.com',
+  'https://www.incorederp.com',
   process.env.NODE_ENV !== 'production' && 'http://localhost:3000',
   process.env.NODE_ENV !== 'production' && 'http://localhost:5173',
 ].filter(Boolean);
