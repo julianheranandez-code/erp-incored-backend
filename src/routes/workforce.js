@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
+const { requirePermission, requireAnyPermission } = require('../middleware/rbac');
 const { writeAudit } = require('../middleware/audit');
 const logger = require('../utils/logger');
 
@@ -511,7 +512,7 @@ router.post('/project-allocation', async (req, res, next) => {
 });
 
 // ─── GET /api/workforce/salary-history ───────────────────────
-router.get('/salary-history', async (req, res, next) => {
+router.get('/salary-history', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
   try {
     const { employee_id, company_id: qCid } = req.query;
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, qCid);
@@ -540,7 +541,7 @@ router.get('/salary-history', async (req, res, next) => {
 });
 
 // ─── POST /api/workforce/salary-history ──────────────────────
-router.post('/salary-history', async (req, res, next) => {
+router.post('/salary-history', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
   try {
     const { employee_id, company_id, effective_date, salary_type = 'fixed',
             base_salary, currency = 'MXN', payroll_frequency = 'biweekly',
@@ -611,7 +612,7 @@ router.post('/salary-history', async (req, res, next) => {
 });
 
 // ─── GET /api/workforce/company-profiles ─────────────────────
-router.get('/company-profiles', async (req, res, next) => {
+router.get('/company-profiles', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
   try {
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
     const { employee_id } = req.query;
@@ -643,7 +644,7 @@ router.get('/payroll-settings', async (req, res, next) => {
 });
 
 // ─── PATCH /api/workforce/payroll-settings ───────────────────
-router.patch('/payroll-settings', async (req, res, next) => {
+router.patch('/payroll-settings', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id || req.body.company_id);
     if (!authorizedCompanyId) return res.status(400).json({ success: false, error: 'company_id_required' });

@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../../config/database');
 const { verifyToken } = require('../../middleware/auth');
+const { requirePermission } = require('../../middleware/rbac');
 const { writeAudit } = require('../../middleware/audit');
 
 router.use(verifyToken);
@@ -309,7 +310,7 @@ router.get('/runs', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
-router.post('/runs', async (req, res, next) => {
+router.post('/runs', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     const { company_id, payroll_period_uuid, employment_regime, currency = 'MXN',
             run_source = 'web', source_reference, notes } = req.body;
@@ -355,7 +356,7 @@ router.get('/runs/:uuid', async (req, res, next) => {
 });
 
 // POST /api/payroll/runs/:uuid/calculate
-router.post('/runs/:uuid/calculate', async (req, res, next) => {
+router.post('/runs/:uuid/calculate', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     // Pre-check: fast fail if run doesn't exist at all
     const preCheck = await query(
@@ -625,7 +626,7 @@ router.post('/runs/:uuid/calculate', async (req, res, next) => {
 });
 
 // POST /api/payroll/runs/:uuid/approve
-router.post('/runs/:uuid/approve', async (req, res, next) => {
+router.post('/runs/:uuid/approve', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     const preCheck = await query('SELECT id FROM payroll_runs WHERE uuid=$1', [req.params.uuid]);
     if (!preCheck.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
@@ -657,7 +658,7 @@ router.post('/runs/:uuid/approve', async (req, res, next) => {
 });
 
 // GET /api/payroll/runs/:uuid/entries
-router.get('/runs/:uuid/entries', async (req, res, next) => {
+router.get('/runs/:uuid/entries', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     const run = await query('SELECT id FROM payroll_runs WHERE uuid=$1', [req.params.uuid]);
     if (!run.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
@@ -792,7 +793,7 @@ router.post('/tax-settings/:employee_uuid', async (req, res, next) => {
 
 // ─── PAY STUBS ────────────────────────────────────────────────
 
-router.get('/stubs/:employee_uuid', async (req, res, next) => {
+router.get('/stubs/:employee_uuid', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
   try {
     const { fiscal_year } = req.query;
     const emp = await query('SELECT id FROM employees WHERE uuid=$1', [req.params.employee_uuid]);
@@ -817,7 +818,7 @@ router.get('/stubs/:employee_uuid', async (req, res, next) => {
 
 // POST /api/payroll/runs/:uuid/generate-labor-costs
 // Distributes approved payroll employer cost to projects via employee_project_allocations
-router.post('/runs/:uuid/generate-labor-costs', async (req, res, next) => {
+router.post('/runs/:uuid/generate-labor-costs', requirePermission('workforce.manage_payroll'), async (req, res, next) => {
   try {
     // Auth: validate company access
     const runResult = await query(`
