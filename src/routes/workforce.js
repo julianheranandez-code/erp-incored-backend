@@ -427,24 +427,26 @@ router.get('/cost-summary', async (req, res, next) => {
 router.get('/project-allocation', async (req, res, next) => {
   try {
     const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
-    const { project_id } = req.query;
+    const { project_id, employee_uuid } = req.query;
     const conditions = [`epa.end_date IS NULL OR epa.end_date >= CURRENT_DATE`];
     const values = [];
     let idx = 1;
 
     if (authorizedCompanyId) { conditions.push(`epa.company_id = $${idx++}`); values.push(authorizedCompanyId); }
-    if (project_id) { conditions.push(`epa.project_id = $${idx++}`); values.push(parseInt(project_id)); }
+    if (project_id)    { conditions.push(`epa.project_id = $${idx++}`); values.push(parseInt(project_id)); }
+    if (employee_uuid) { conditions.push(`e.uuid = $${idx++}`); values.push(employee_uuid); }
 
     const result = await query(`
       SELECT epa.*,
-        CONCAT(e.first_name,' ',e.last_name) AS full_name,
+        e.uuid AS employee_uuid,
+        CONCAT(e.first_name,' ',COALESCE(e.last_name_paternal, e.last_name,'')) AS full_name,
         e.status AS employee_status,
         p.name AS project_name
       FROM employee_project_allocations epa
       JOIN employees e  ON e.id = epa.employee_id
       LEFT JOIN projects p ON p.id = epa.project_id
       WHERE ${conditions.join(' AND ')}
-      ORDER BY p.name, e.last_name ASC
+      ORDER BY p.name, COALESCE(e.last_name_paternal, e.last_name) ASC
     `, values);
 
     res.json({ success: true, count: result.rows.length, data: result.rows });
