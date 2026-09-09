@@ -611,6 +611,162 @@ router.get('/:uuid/payroll-summary', requirePermission('workforce.view_sensitive
   } catch(e) { next(e); }
 });
 
+// GET /api/people/employees/:uuid/timeline
+// Permission: workforce.view — unified chronological event stream
+// Combines: employment_events + safe domain projections (no financial values)
+// Phase 3E-5 — additive only, no schema changes, no sensitive data
+router.get('/:uuid/timeline', async (req, res, next) => {
+  try {
+    // Step 1: Resolve employee
+    const empBase = await query(
+      'SELECT id, company_id FROM employees WHERE uuid = $1', [req.params.uuid]);
+    if (!empBase.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const { id: empId, company_id: empCompanyId } = empBase.rows[0];
+
+    // Step 2: Company isolation
+    const userCompanies = Array.isArray(req.user.company_access)
+      ? req.user.company_access.map(Number)
+      : [Number(req.user.company_id)];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // Pagination
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Step 3: Parallel bounded queries — NO financial values
+    const [
+      empEventsResult,
+      contractEventsResult,
+      leaveEventsResult,
+      compensationEventsResult
+    ] = await Promise.all([
+
+      // Source 1: employment_events (primary — hire, contract_change, termination)
+      query(`
+        SELECT
+          'employment_event'    AS timeline_source,
+          ee.uuid               AS source_uuid,
+          ee.event_type         AS event_type,
+          ee.event_date         AS event_date,
+          ee.title              AS title,
+          ee.description        AS description,
+          ee.source             AS origin,
+          ee.created_at         AS created_at,
+          CONCAT(u.first_name,' ',COALESCE(u.last_name,'')) AS actor_name
+        FROM employment_events ee
+        LEFT JOIN users u ON u.id = ee.actor_id
+        WHERE ee.employee_id = $1
+          AND ee.company_id = $2
+      `, [empId, empCompanyId]),
+
+      // Source 2: employment_contracts — version changes (operational, not financial)
+      query(`
+        SELECT
+          'contract_version'    AS timeline_source,
+          ec.uuid               AS source_uuid,
+          'contract_version'    AS event_type,
+          ec.start_date         AS event_date,
+          CONCAT('Contract v', ec.version_number, ': ', ec.contract_type,
+            CASE WHEN ec.employment_regime IS NOT NULL
+              THEN ' / ' || ec.employment_regime ELSE '' END) AS title,
+          ec.work_modality      AS description,
+          'contracts'           AS origin,
+          ec.created_at         AS created_at,
+          NULL                  AS actor_name
+        FROM employment_contracts ec
+        WHERE ec.employee_id = $1
+        ORDER BY ec.version_number DESC
+      `, [empId]),
+
+      // Source 3: leave_requests — approved/rejected only (safe)
+      query(`
+        SELECT
+          'leave_request'       AS timeline_source,
+          lr.uuid               AS source_uuid,
+          CASE lr.status
+            WHEN 'approved' THEN 'leave_approved'
+            WHEN 'rejected' THEN 'leave_rejected'
+            WHEN 'cancelled' THEN 'leave_cancelled'
+            ELSE 'leave_' || lr.status
+          END                   AS event_type,
+          lr.start_date         AS event_date,
+          CONCAT(lt.name, ': ', lr.start_date::text,
+            CASE WHEN lr.end_date != lr.start_date
+              THEN ' → ' || lr.end_date::text ELSE '' END) AS title,
+          lr.reason             AS description,
+          'leave'               AS origin,
+          lr.updated_at         AS created_at,
+          NULL                  AS actor_name
+        FROM leave_requests lr
+        LEFT JOIN leave_types lt ON lt.id = lr.leave_type_id
+        WHERE lr.employee_id = $1
+          AND lr.company_id = $2
+          AND lr.status IN ('approved','rejected','cancelled')
+        ORDER BY lr.start_date DESC
+        LIMIT 20
+      `, [empId, empCompanyId]),
+
+      // Source 4: compensation_records — effective date only (NO amount)
+      query(`
+        SELECT
+          'compensation_change' AS timeline_source,
+          cr.uuid               AS source_uuid,
+          'compensation_change' AS event_type,
+          cr.effective_date     AS event_date,
+          CONCAT('Compensation update: ', cr.salary_type, ' / ', cr.pay_frequency) AS title,
+          cr.reason             AS description,
+          'compensation'        AS origin,
+          cr.created_at         AS created_at,
+          NULL                  AS actor_name
+        FROM compensation_records cr
+        WHERE cr.employee_id = $1
+          AND cr.company_id = $2
+        ORDER BY cr.effective_date DESC
+        LIMIT 10
+      `, [empId, empCompanyId])
+    ]);
+
+    // Step 4: Merge and sort all events chronologically
+    const allEvents = [
+      ...empEventsResult.rows,
+      ...contractEventsResult.rows,
+      ...leaveEventsResult.rows,
+      ...compensationEventsResult.rows
+    ];
+
+    // Sort descending by event_date, then created_at
+    allEvents.sort((a, b) => {
+      const dateA = new Date(a.event_date || a.created_at);
+      const dateB = new Date(b.event_date || b.created_at);
+      if (dateB - dateA !== 0) return dateB - dateA;
+      return new Date(b.created_at) - new Date(a.created_at);
+    });
+
+    // Apply pagination
+    const total = allEvents.length;
+    const paginated = allEvents.slice(offset, offset + limit);
+
+    // Step 5: Safety check — no sensitive fields
+    const FORBIDDEN = ['amount','gross','net','salary_amount','deduction','burden','tax','curp','rfc'];
+    const safe = paginated.map(ev => {
+      const cleaned = { ...ev };
+      FORBIDDEN.forEach(f => { if (f in cleaned) delete cleaned[f]; });
+      return cleaned;
+    });
+
+    res.json({
+      success: true,
+      count: safe.length,
+      total,
+      pagination: { limit, offset, has_more: offset + limit < total },
+      data: safe
+    });
+  } catch(e) { next(e); }
+});
+
 // GET /api/people/employees/:uuid/360 — Employee 360 Safe Overview Shell
 // Permission: workforce.view (NO sensitive compensation/payroll data)
 // Phase 3E-1 — Additive only, no schema changes
