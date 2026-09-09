@@ -441,6 +441,85 @@ router.post('/:uuid/terminate', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+// GET /api/people/employees/:uuid/documents
+// Permission: workforce.view — reads document_attachments using document_type='employee' convention
+// Phase 3E-4 — additive, no schema changes
+router.get('/:uuid/documents', async (req, res, next) => {
+  try {
+    const empBase = await query(
+      'SELECT id, company_id FROM employees WHERE uuid = $1', [req.params.uuid]);
+    if (!empBase.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const { id: empId, company_id: empCompanyId } = empBase.rows[0];
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const result = await query(`
+      SELECT
+        da.id, da.uuid, da.document_type, da.file_name,
+        da.file_url, da.mime_type, da.file_size_bytes,
+        da.description, da.tags, da.is_confidential,
+        da.uploaded_at, da.expiry_date,
+        CONCAT(u.first_name,' ',COALESCE(u.last_name_paternal, u.last_name,'')) AS uploaded_by_name
+      FROM document_attachments da
+      LEFT JOIN users u ON u.id = da.uploaded_by
+      WHERE da.document_type = 'employee'
+        AND da.document_id = $1
+        AND da.company_id = $2
+      ORDER BY da.uploaded_at DESC
+      LIMIT 50
+    `, [empId, empCompanyId]);
+
+    res.json({ success: true, count: result.rows.length, data: result.rows });
+  } catch(e) { next(e); }
+});
+
+// GET /api/people/employees/:uuid/compliance
+// Permission: workforce.compliance — employee-scoped compliance records
+// Phase 3E-4 — additive, no schema changes
+router.get('/:uuid/compliance', requirePermission('workforce.compliance'), async (req, res, next) => {
+  try {
+    const empBase = await query(
+      'SELECT id, company_id FROM employees WHERE uuid = $1', [req.params.uuid]);
+    if (!empBase.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const { id: empId, company_id: empCompanyId } = empBase.rows[0];
+
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const result = await query(`
+      SELECT
+        ecr.id, ecr.uuid, ecr.status, ecr.due_date,
+        ecr.completed_date, ecr.notes, ecr.created_at,
+        cr.name AS requirement_name,
+        cr.category, cr.frequency, cr.is_mandatory,
+        cr.country_code, cr.employment_regime
+      FROM employee_compliance_records ecr
+      JOIN compliance_requirements cr ON cr.id = ecr.requirement_id
+      WHERE ecr.employee_id = $1
+        AND ecr.company_id = $2
+      ORDER BY ecr.due_date ASC NULLS LAST
+      LIMIT 100
+    `, [empId, empCompanyId]);
+
+    const summary = {
+      total: result.rows.length,
+      completed: result.rows.filter(r => r.status === 'completed').length,
+      pending: result.rows.filter(r => r.status === 'pending').length,
+      overdue: result.rows.filter(r => r.status === 'overdue').length,
+      not_applicable: result.rows.filter(r => r.status === 'not_applicable').length
+    };
+
+    res.json({ success: true, count: result.rows.length, summary, data: result.rows });
+  } catch(e) { next(e); }
+});
+
 // GET /api/people/employees/:uuid/payroll-summary
 // Permission: workforce.view_sensitive — thin wrapper, no deduction/tax detail
 // Phase 3E-3 — summary only, certified payroll engine not touched
