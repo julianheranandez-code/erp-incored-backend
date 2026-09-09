@@ -469,7 +469,7 @@ router.get('/:uuid/documents', async (req, res, next) => {
         da.is_sensitive, da.sensitivity_level,
         da.is_verified, da.verified_at,
         da.expiration_date, da.uploaded_at,
-        CONCAT(u.first_name,' ',COALESCE(u.last_name_paternal, u.last_name,'')) AS uploaded_by_name
+        CONCAT(u.first_name,' ',COALESCE(u.last_name,'')) AS uploaded_by_name
       FROM document_attachments da
       LEFT JOIN users u ON u.id = da.uploaded_by
       WHERE da.document_type = 'employee'
