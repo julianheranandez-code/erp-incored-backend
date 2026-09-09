@@ -453,7 +453,9 @@ router.get('/:uuid/documents', async (req, res, next) => {
 
     const { id: empId, company_id: empCompanyId } = empBase.rows[0];
 
-    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    const userCompanies = Array.isArray(req.user.company_access)
+      ? req.user.company_access.map(Number)
+      : [Number(req.user.company_id)];
     if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
       return res.status(403).json({ success: false, error: 'forbidden' });
 
@@ -494,7 +496,9 @@ router.get('/:uuid/compliance', requirePermission('workforce.compliance'), async
 
     const { id: empId, company_id: empCompanyId } = empBase.rows[0];
 
-    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    const userCompanies = Array.isArray(req.user.company_access)
+      ? req.user.company_access.map(Number)
+      : [Number(req.user.company_id)];
     if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
       return res.status(403).json({ success: false, error: 'forbidden' });
 
