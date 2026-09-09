@@ -489,7 +489,7 @@ router.get('/:uuid/360', async (req, res, next) => {
           e.work_email,
           e.country_code,
           e.status AS employment_status,
-          e.is_active,
+          CASE WHEN e.status = 'active' THEN true ELSE false END AS is_active,
           e.hire_date,
           e.termination_date,
           e.photo_url,
