@@ -440,4 +440,204 @@ router.post('/:uuid/terminate', async (req, res, next) => {
   } catch(e) { next(e); }
 });
 
+// GET /api/people/employees/:uuid/360 — Employee 360 Safe Overview Shell
+// Permission: workforce.view (NO sensitive compensation/payroll data)
+// Phase 3E-1 — Additive only, no schema changes
+router.get('/:uuid/360', async (req, res, next) => {
+  try {
+    // Step 1: Resolve employee by UUID — authoritative company_id
+    const empBase = await query(
+      'SELECT id, company_id, uuid FROM employees WHERE uuid = $1',
+      [req.params.uuid]
+    );
+    if (!empBase.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found',
+        message: 'Employee not found.' });
+
+    const { id: empId, company_id: empCompanyId } = empBase.rows[0];
+
+    // Step 2: Company isolation — validate against authoritative employee.company_id
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden',
+        message: 'Access denied.' });
+
+    // Step 3: Parallel bounded queries — NO salary, NO payroll, NO compensation amounts
+    const [
+      identityResult,
+      contractResult,
+      allocResult,
+      attendanceTodayResult,
+      leaveBalanceResult,
+      complianceResult
+    ] = await Promise.all([
+
+      // Identity + position + department — explicitly safe fields only
+      query(`
+        SELECT
+          e.uuid,
+          e.employee_number,
+          e.badge_number,
+          TRIM(CONCAT(
+            e.first_name, ' ',
+            COALESCE(e.last_name_paternal, e.last_name, ''), ' ',
+            COALESCE(e.last_name_maternal, '')
+          )) AS full_legal_name,
+          e.first_name,
+          COALESCE(e.last_name_paternal, e.last_name) AS last_name,
+          e.preferred_name,
+          e.work_email,
+          e.country_code,
+          e.status AS employment_status,
+          e.is_active,
+          e.hire_date,
+          e.termination_date,
+          e.photo_url,
+          co.name AS company_name,
+          pc.title AS position_title,
+          pc.job_code,
+          d.name AS department_name
+        FROM employees e
+        LEFT JOIN companies co ON co.id = e.company_id
+        LEFT JOIN employee_positions ep ON ep.employee_id = e.id AND ep.is_current = true
+        LEFT JOIN position_catalog pc ON pc.id = ep.position_id
+        LEFT JOIN departments d ON d.id = ep.department_id
+        WHERE e.id = $1
+      `, [empId]),
+
+      // Current contract — regime/type are operational, not financial
+      query(`
+        SELECT contract_type, employment_regime, work_modality,
+          start_date AS contract_start, version_number
+        FROM employment_contracts
+        WHERE employee_id = $1 AND is_current = true
+        LIMIT 1
+      `, [empId]),
+
+      // Current active project allocations count — operational
+      query(`
+        SELECT COUNT(*) AS current_projects_count
+        FROM employee_project_allocations
+        WHERE employee_id = $1
+          AND company_id = $2
+          AND (end_date IS NULL OR end_date >= CURRENT_DATE)
+          AND start_date <= CURRENT_DATE
+      `, [empId, empCompanyId]),
+
+      // Attendance today — operational status only
+      query(`
+        SELECT is_day_off, attendance_source, hours_worked,
+          punch_in IS NOT NULL AS punched_in,
+          punch_out IS NOT NULL AS punched_out
+        FROM attendance_records
+        WHERE employee_id = $1
+          AND company_id = $2
+          AND work_date = CURRENT_DATE
+        LIMIT 1
+      `, [empId, empCompanyId]),
+
+      // Leave balance summary — accrued/used/pending for current year only
+      query(`
+        SELECT
+          COALESCE(SUM(accrued_days), 0) AS total_accrued,
+          COALESCE(SUM(used_days), 0) AS total_used,
+          COALESCE(SUM(pending_days), 0) AS total_pending
+        FROM leave_balances
+        WHERE employee_id = $1
+          AND company_id = $2
+          AND fiscal_year = EXTRACT(YEAR FROM CURRENT_DATE)
+      `, [empId, empCompanyId]),
+
+      // Compliance summary — count only, no financial data
+      query(`
+        SELECT
+          COUNT(*) FILTER (WHERE status NOT IN ('completed','not_applicable')) AS warnings_count,
+          COUNT(*) FILTER (WHERE status = 'completed' OR status = 'not_applicable') AS ok_count
+        FROM employee_compliance_records
+        WHERE employee_id = $1 AND company_id = $2
+      `, [empId, empCompanyId])
+    ]);
+
+    const identity = identityResult.rows[0] || {};
+    const contract = contractResult.rows[0] || null;
+    const todayAtt = attendanceTodayResult.rows[0] || null;
+    const leaveAgg = leaveBalanceResult.rows[0] || {};
+    const compliance = complianceResult.rows[0] || {};
+
+    // Step 4: Build EXPLICIT DTO — no spreading, no SELECT *, no sensitive fields
+    const dto = {
+      // Identity — safe
+      uuid:               identity.uuid,
+      employee_number:    identity.employee_number,
+      badge_number:       identity.badge_number || null,
+      full_legal_name:    identity.full_legal_name,
+      first_name:         identity.first_name,
+      last_name:          identity.last_name,
+      preferred_name:     identity.preferred_name || null,
+      work_email:         identity.work_email || null,
+      photo_url:          identity.photo_url || null,
+      country_code:       identity.country_code || null,
+
+      // Employment status — safe
+      employment_status:  identity.employment_status,
+      is_active:          identity.is_active,
+      hire_date:          identity.hire_date,
+      termination_date:   identity.termination_date || null,
+
+      // Organizational — safe
+      company_name:       identity.company_name || null,
+      position_title:     identity.position_title || null,
+      job_code:           identity.job_code || null,
+      department_name:    identity.department_name || null,
+
+      // Contract — operational, not financial
+      contract_type:      contract?.contract_type || null,
+      employment_regime:  contract?.employment_regime || null,
+      work_modality:      contract?.work_modality || null,
+      contract_start:     contract?.contract_start || null,
+
+      // Project summary — count only
+      current_projects_count: parseInt(allocResult.rows[0]?.current_projects_count || 0),
+
+      // Attendance today — operational summary
+      attendance_today: todayAtt ? {
+        punched_in:        todayAtt.punched_in,
+        punched_out:       todayAtt.punched_out,
+        hours_worked:      todayAtt.hours_worked || null,
+        is_day_off:        todayAtt.is_day_off,
+        attendance_source: todayAtt.attendance_source || null
+      } : null,
+
+      // Leave balance — current year summary
+      leave_balance_summary: {
+        total_accrued: parseFloat(leaveAgg.total_accrued || 0),
+        total_used:    parseFloat(leaveAgg.total_used    || 0),
+        total_pending: parseFloat(leaveAgg.total_pending || 0)
+      },
+
+      // Compliance — count summary only
+      compliance_status: {
+        ok:             parseInt(compliance.ok_count || 0),
+        warnings_count: parseInt(compliance.warnings_count || 0)
+      }
+    };
+
+    // Explicit safety check — ensure no sensitive fields leaked
+    const FORBIDDEN_FIELDS = [
+      'salary','salary_base','base_salary','amount','gross_pay','net_pay',
+      'total_deductions','employer_burden','tax','curp','rfc','nss',
+      'bank','account_number','routing_number','personal_email',
+      'birth_date','address','marital_status','emergency_contact'
+    ];
+    for (const field of FORBIDDEN_FIELDS) {
+      if (field in dto) {
+        // Safety net — should never trigger if DTO is correctly built
+        delete dto[field];
+      }
+    }
+
+    res.json({ success: true, data: dto });
+  } catch(e) { next(e); }
+});
+
 module.exports = router;
