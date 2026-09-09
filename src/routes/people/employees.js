@@ -281,7 +281,7 @@ router.get('/:uuid/skills', async (req, res, next) => {
 });
 
 // GET /api/people/employees/:uuid/compensation
-router.get('/:uuid/compensation', async (req, res, next) => {
+router.get('/:uuid/compensation', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
   try {
     const emp = await query('SELECT id FROM employees WHERE uuid=$1', [req.params.uuid]);
     if (!emp.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
@@ -437,6 +437,86 @@ router.post('/:uuid/terminate', async (req, res, next) => {
 
     res.json({ success: true, message: 'Employee terminated.',
       data: { uuid: req.params.uuid, termination_date, status: 'terminated' }});
+  } catch(e) { next(e); }
+});
+
+// GET /api/people/employees/:uuid/payroll-summary
+// Permission: workforce.view_sensitive — thin wrapper, no deduction/tax detail
+// Phase 3E-3 — summary only, certified payroll engine not touched
+router.get('/:uuid/payroll-summary', requirePermission('workforce.view_sensitive'), async (req, res, next) => {
+  try {
+    // Step 1: Resolve employee
+    const empBase = await query(
+      'SELECT id, company_id FROM employees WHERE uuid = $1',
+      [req.params.uuid]
+    );
+    if (!empBase.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    const { id: empId, company_id: empCompanyId } = empBase.rows[0];
+
+    // Step 2: Company isolation
+    const userCompanies = (req.user.company_access || [req.user.company_id]).map(Number);
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(Number(empCompanyId)))
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    // Step 3: Payroll summary — last approved run + aggregate counts
+    // NO deductions detail, NO employer burden, NO tax breakdown
+    const summaryResult = await query(`
+      SELECT
+        pr.uuid AS payroll_run_uuid,
+        pr.run_number,
+        pp.start_date AS period_start,
+        pp.end_date AS period_end,
+        pr.status AS run_status,
+        pe.gross_pay AS last_gross,
+        pe.net_pay AS last_net,
+        pe.currency,
+        pe.employment_regime,
+        (SELECT COUNT(DISTINCT pr2.id)
+         FROM payroll_entries pe2
+         JOIN payroll_runs pr2 ON pr2.id = pe2.payroll_run_id
+         WHERE pe2.employee_id = $1
+           AND pr2.status = 'approved') AS approved_runs_count
+      FROM payroll_entries pe
+      JOIN payroll_runs pr ON pr.id = pe.payroll_run_id
+      JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
+      WHERE pe.employee_id = $1
+        AND pr.status = 'approved'
+      ORDER BY pp.end_date DESC
+      LIMIT 1
+    `, [empId]);
+
+    if (!summaryResult.rows[0]) {
+      return res.json({ success: true, data: {
+        has_payroll_history: false,
+        last_period: null,
+        last_gross: null,
+        last_net: null,
+        currency: null,
+        employment_regime: null,
+        approved_runs_count: 0
+      }});
+    }
+
+    const s = summaryResult.rows[0];
+
+    // Explicit DTO — NO deductions, NO employer burden, NO tax fields
+    res.json({ success: true, data: {
+      has_payroll_history: true,
+      last_period: {
+        payroll_run_uuid: s.payroll_run_uuid,
+        run_number:       s.run_number,
+        period_start:     s.period_start,
+        period_end:       s.period_end,
+        run_status:       s.run_status
+      },
+      last_gross:           parseFloat(s.last_gross || 0),
+      last_net:             parseFloat(s.last_net   || 0),
+      currency:             s.currency,
+      employment_regime:    s.employment_regime,
+      approved_runs_count:  parseInt(s.approved_runs_count || 0)
+    }});
   } catch(e) { next(e); }
 });
 
