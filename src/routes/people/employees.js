@@ -505,10 +505,11 @@ router.get('/:uuid/compliance', requirePermission('workforce.compliance'), async
     const result = await query(`
       SELECT
         ecr.id, ecr.uuid, ecr.status, ecr.due_date,
-        ecr.completed_date, ecr.notes, ecr.created_at,
-        cr.name AS requirement_name,
-        cr.category, cr.frequency, cr.is_mandatory,
-        cr.country_code, cr.employment_regime
+        ecr.completed_date, ecr.expiry_date, ecr.notes,
+        ecr.record_source, ecr.created_at, ecr.updated_at,
+        cr.requirement_code, cr.name AS requirement_name,
+        cr.category, cr.frequency, cr.is_active,
+        cr.country_code, cr.alert_days
       FROM employee_compliance_records ecr
       JOIN compliance_requirements cr ON cr.id = ecr.requirement_id
       WHERE ecr.employee_id = $1
