@@ -459,16 +459,21 @@ router.get('/:uuid/documents', async (req, res, next) => {
 
     const result = await query(`
       SELECT
-        da.id, da.uuid, da.document_type, da.file_name,
-        da.file_url, da.mime_type, da.file_size_bytes,
-        da.description, da.tags, da.is_confidential,
-        da.uploaded_at, da.expiry_date,
+        da.id, da.document_type, da.document_category,
+        da.original_filename AS file_name,
+        da.storage_path AS file_path,
+        da.mime_type, da.file_size,
+        da.notes AS description,
+        da.is_sensitive, da.sensitivity_level,
+        da.is_verified, da.verified_at,
+        da.expiration_date, da.uploaded_at,
         CONCAT(u.first_name,' ',COALESCE(u.last_name_paternal, u.last_name,'')) AS uploaded_by_name
       FROM document_attachments da
       LEFT JOIN users u ON u.id = da.uploaded_by
       WHERE da.document_type = 'employee'
         AND da.document_id = $1
         AND da.company_id = $2
+        AND da.is_deleted = false
       ORDER BY da.uploaded_at DESC
       LIMIT 50
     `, [empId, empCompanyId]);
@@ -508,15 +513,16 @@ router.get('/:uuid/compliance', requirePermission('workforce.compliance'), async
       LIMIT 100
     `, [empId, empCompanyId]);
 
+    const rows = result.rows || [];
     const summary = {
-      total: result.rows.length,
-      completed: result.rows.filter(r => r.status === 'completed').length,
-      pending: result.rows.filter(r => r.status === 'pending').length,
-      overdue: result.rows.filter(r => r.status === 'overdue').length,
-      not_applicable: result.rows.filter(r => r.status === 'not_applicable').length
+      total:          rows.length,
+      completed:      rows.filter(r => r.status === 'completed').length,
+      pending:        rows.filter(r => r.status === 'pending').length,
+      overdue:        rows.filter(r => r.status === 'overdue').length,
+      not_applicable: rows.filter(r => r.status === 'not_applicable').length
     };
 
-    res.json({ success: true, count: result.rows.length, summary, data: result.rows });
+    res.json({ success: true, count: rows.length, summary, data: rows });
   } catch(e) { next(e); }
 });
 
