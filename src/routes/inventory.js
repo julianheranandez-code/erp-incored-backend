@@ -1321,7 +1321,7 @@ router.get('/valuation/by-category', async (req, res, next) => {
 // ─── EXTEND INVENTORY MOVEMENTS with costing ─────────────────
 
 // Override POST /inventory-movements to support weighted avg cost
-router.post('/inventory-movements/costed', async (req, res, next) => {
+router.post('/inventory-movements/costed', requirePermission('inventory.manage'), async (req, res, next) => {
   const startTime = Date.now();
   try {
     const {
