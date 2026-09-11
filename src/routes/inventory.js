@@ -4,6 +4,7 @@ const express = require('express');
 const router = express.Router();
 const { query, withTransaction } = require('../config/database');
 const { verifyToken } = require('../middleware/auth');
+const { requirePermission } = require('../middleware/rbac');
 const { writeAudit } = require('../middleware/audit');
 const logger = require('../utils/logger');
 
