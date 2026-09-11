@@ -1257,13 +1257,13 @@ router.get('/valuation', async (req, res, next) => {
       query(`SELECT * FROM inventory_valuation ${where} ORDER BY warehouse_name, material_name ASC`, values),
       query(`
         SELECT
-          company_id,
           COALESCE(SUM(available_value), 0)  AS total_available_value,
           COALESCE(SUM(reserved_value), 0)   AS total_reserved_value,
           COALESCE(SUM(damaged_value), 0)    AS total_damaged_value,
           COALESCE(SUM(total_value), 0)      AS total_inventory_value,
           COUNT(DISTINCT material_id)        AS unique_materials,
-          COUNT(DISTINCT warehouse_id)       AS warehouses_with_stock
+          COUNT(DISTINCT warehouse_id)       AS warehouses_with_stock,
+          'standard_cost'                    AS valuation_method
         FROM inventory_valuation ${where}
       `, values)
     ]);
