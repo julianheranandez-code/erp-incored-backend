@@ -934,23 +934,41 @@ router.get('/inventory-movements', async (req, res, next) => {
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    const result = await query(`
-      SELECT im.*,
-        m.name AS material_name, m.sku,
-        sw.name AS source_warehouse_name,
-        dw.name AS destination_warehouse_name,
-        CONCAT(u.first_name,' ',u.last_name) AS performed_by_name
-      FROM inventory_movements im
-      LEFT JOIN materials m  ON m.id = im.material_id
-      LEFT JOIN warehouses sw ON sw.id = im.source_warehouse_id
-      LEFT JOIN warehouses dw ON dw.id = im.destination_warehouse_id
-      LEFT JOIN users u      ON u.id = im.performed_by
-      ${where}
-      ORDER BY im.created_at DESC
-      LIMIT $${idx} OFFSET $${idx+1}
-    `, [...values, parseInt(limit), offset]);
+    const [result, totalResult] = await Promise.all([
+      query(`
+        SELECT im.*,
+          m.name AS material_name, m.sku,
+          sw.name AS source_warehouse_name,
+          dw.name AS destination_warehouse_name,
+          CONCAT(u.first_name,' ',u.last_name) AS performed_by_name
+        FROM inventory_movements im
+        LEFT JOIN materials m  ON m.id = im.material_id
+        LEFT JOIN warehouses sw ON sw.id = im.source_warehouse_id
+        LEFT JOIN warehouses dw ON dw.id = im.destination_warehouse_id
+        LEFT JOIN users u      ON u.id = im.performed_by
+        ${where}
+        ORDER BY im.created_at DESC
+        LIMIT $${idx} OFFSET $${idx+1}
+      `, [...values, parseInt(limit), offset]),
+      query(`
+        SELECT COUNT(*) AS total
+        FROM inventory_movements im
+        LEFT JOIN warehouses sw ON sw.id = im.source_warehouse_id
+        LEFT JOIN warehouses dw ON dw.id = im.destination_warehouse_id
+        ${where}
+      `, values)
+    ]);
 
-    res.json({ success: true, count: result.rows.length, data: result.rows });
+    const total = parseInt(totalResult.rows[0].total);
+    res.json({
+      success: true,
+      count: result.rows.length,
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+      has_more: offset + result.rows.length < total,
+      data: result.rows
+    });
   } catch (error) { next(error); }
 });
 
