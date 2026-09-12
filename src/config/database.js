@@ -13,11 +13,11 @@ const {
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
-  min: parseInt(DATABASE_POOL_MIN) || 1,
-  max: parseInt(DATABASE_POOL_MAX) || 5,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 3000,
-  allowExitOnIdle: true,
+  min: parseInt(DATABASE_POOL_MIN) || 2,
+  max: parseInt(DATABASE_POOL_MAX) || 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 8000,
+  allowExitOnIdle: false,
   ssl: DATABASE_SSL === 'true' || NODE_ENV === 'production'
     ? { rejectUnauthorized: false }
     : false,
