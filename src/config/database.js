@@ -14,7 +14,7 @@ const {
 const pool = new Pool({
   connectionString: DATABASE_URL,
   min: parseInt(DATABASE_POOL_MIN) || 2,
-  max: parseInt(DATABASE_POOL_MAX) || 10,
+  max: parseInt(DATABASE_POOL_MAX) || 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 8000,
   allowExitOnIdle: false,
