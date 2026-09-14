@@ -298,10 +298,16 @@ router.get('/imports', async (req, res, next) => {
 
     const result = await query(`
       SELECT b.*, a.bank_name, a.account_name, a.currency,
-        CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name
+        CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name,
+        b.uploaded_at AS created_at,
+        CONCAT(u.first_name,' ',u.last_name) AS created_by_name,
+        b.processed_at,
+        CONCAT(pu.first_name,' ',pu.last_name) AS processed_by_name,
+        b.import_status AS status
       FROM treasury_import_batches b
       JOIN treasury_bank_accounts a ON a.id = b.bank_account_id
       LEFT JOIN users u ON u.id = b.uploaded_by
+      LEFT JOIN users pu ON pu.id = b.uploaded_by
       ${where}
       ORDER BY b.uploaded_at DESC LIMIT 100
     `, values);
@@ -429,6 +435,40 @@ router.post('/imports/:id/process', async (req, res, next) => {
       } catch(err) { failed++; }
     }
 
+    // Project INFLOW rows to bank_transactions (AR domain) — idempotent by import_hash
+    let projected = 0;
+    if (imported > 0) {
+      const inflowRows = await query(`
+        SELECT * FROM treasury_import_rows
+        WHERE batch_id=$1 AND direction='INFLOW'
+      `, [batchId]);
+
+      for (const row of inflowRows.rows) {
+        try {
+          await query(`
+            INSERT INTO bank_transactions
+              (company_id, bank_account_id, transaction_date, amount,
+               transaction_type, reference, description,
+               customer_name, match_status, applied_invoice_id,
+               created_by, created_at)
+            VALUES ($1,$2,$3,$4,'deposit',$5,$6,NULL,'unmatched',NULL,$7,NOW())
+            ON CONFLICT DO NOTHING
+          `, [
+            batch.rows[0].company_id,
+            batchAccountId,
+            row.transaction_date,
+            row.amount,
+            row.bank_reference || null,
+            row.bank_description || null,
+            req.user.id
+          ]);
+          projected++;
+        } catch(projErr) {
+          // non-fatal — log but continue
+        }
+      }
+    }
+
     // Run matching engine
     const matched = await runMatchingEngine(batchId, batch.rows[0].company_id);
 
@@ -537,6 +577,34 @@ router.patch('/reconciliation/rows/:id/classify', async (req, res, next) => {
       newValues: { ...req.body, reason: req.body.reason || null },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
+
+    // FIX 3: Sync status to bank_transactions (bidirectional)
+    if (match_status && existing.rows[0].direction === 'INFLOW') {
+      try {
+        const newBtStatus = match_status === 'ignored' ? 'matched' : match_status;
+        await query(`
+          UPDATE bank_transactions SET
+            match_status = $1
+          WHERE company_id = $2
+            AND bank_account_id = (
+              SELECT bank_account_id FROM treasury_import_batches
+              WHERE id = $3
+            )
+            AND transaction_date = $4
+            AND amount = $5
+            AND (reference = $6 OR ($6 IS NULL AND reference IS NULL))
+        `, [
+          newBtStatus,
+          existing.rows[0].company_id,
+          existing.rows[0].batch_id,
+          existing.rows[0].transaction_date,
+          existing.rows[0].amount,
+          existing.rows[0].bank_reference || null
+        ]);
+      } catch(syncErr) {
+        // non-fatal sync error
+      }
+    }
 
     res.json({ success: true, message: 'Row classified.', data: result.rows[0] });
   } catch (error) { next(error); }
