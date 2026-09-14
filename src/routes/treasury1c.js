@@ -789,19 +789,25 @@ router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
   if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
   try {
     const rowId = parseInt(req.params.row_id);
-    const row = await query(`
-      SELECT r.*, b.company_id, b.bank_account_id
+    if (!rowId || isNaN(rowId))
+      return res.status(400).json({ success: false, error: 'invalid_row_id' });
+
+    const rowResult = await query(`
+      SELECT r.id, r.amount, r.direction, r.transaction_date,
+             r.bank_reference, r.bank_description, r.match_status,
+             r.company_id, b.bank_account_id
       FROM treasury_import_rows r
       JOIN treasury_import_batches b ON b.id = r.batch_id
       WHERE r.id = $1
     `, [rowId]);
 
-    if (!row.rows[0])
+    if (!rowResult.rows[0])
       return res.status(404).json({ success: false, error: 'not_found' });
 
-    if (!await assertCompanyAccess(req, res, row.rows[0].company_id)) return;
+    const companyId = rowResult.rows[0].company_id;
+    if (!await assertCompanyAccess(req, res, companyId)) return;
 
-    const r = row.rows[0];
+    const r = rowResult.rows[0];
 
     // Run live suggestion query
     const candidates = await query(`
