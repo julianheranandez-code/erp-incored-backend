@@ -822,28 +822,21 @@ router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
           WHEN i.total_amount = $1 THEN 90
           WHEN ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.01 THEN 80
           ELSE 50
-        END +
-        CASE
-          WHEN $2 IS NOT NULL AND i.folio IS NOT NULL
-            AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%' THEN 20
-          ELSE 0
         END AS confidence_score
       FROM ar_invoices i
       LEFT JOIN clients c ON c.id = i.client_id
       LEFT JOIN projects p ON p.id = i.project_id
-      WHERE i.company_id = $3
+      WHERE i.company_id = $2
         AND i.status NOT IN ('paid','cancelled','void')
         AND i.outstanding_balance > 0
         AND (
           i.outstanding_balance = $1
           OR i.total_amount = $1
           OR ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.05
-          OR ($2 IS NOT NULL AND i.folio IS NOT NULL
-              AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%')
         )
       ORDER BY confidence_score DESC
       LIMIT 5
-    `, [r.amount, r.bank_reference || r.bank_description || null, r.company_id]);
+    `, [r.amount, r.company_id]);
 
     res.json({
       success: true,
