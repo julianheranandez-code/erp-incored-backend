@@ -531,16 +531,32 @@ router.patch('/reconciliation/rows/:id/classify', async (req, res, next) => {
   try {
     const rowId = parseInt(req.params.id);
     const { category_id, project_id, vendor_id, client_id,
-            notes, match_status, matched_transaction_id } = req.body;
+            notes, match_status, matched_transaction_id, direction } = req.body;
 
     const existing = await query(
-      `SELECT r.*, b.company_id FROM treasury_import_rows r
+      `SELECT r.*, b.company_id, b.bank_account_id FROM treasury_import_rows r
        JOIN treasury_import_batches b ON b.id = r.batch_id WHERE r.id=$1`, [rowId]
     );
     if (!existing.rows[0])
       return res.status(404).json({ success: false, error: 'not_found' });
 
     if (!await assertCompanyAccess(req, res, existing.rows[0].company_id)) return;
+
+    // Block direction change if already matched/ignored
+    if (direction && existing.rows[0].match_status === 'matched')
+      return res.status(409).json({ success: false, error: 'already_matched',
+        message: 'Cannot change direction of an already matched transaction.' });
+    if (direction && existing.rows[0].match_status === 'ignored')
+      return res.status(409).json({ success: false, error: 'already_ignored',
+        message: 'Cannot change direction of an ignored transaction.' });
+
+    // Validate direction value
+    const VALID_DIRECTIONS = ['INFLOW','OUTFLOW'];
+    if (direction && !VALID_DIRECTIONS.includes(direction.toUpperCase()))
+      return res.status(400).json({ success: false, error: 'invalid_direction',
+        message: 'direction must be INFLOW or OUTFLOW.' });
+
+    const normalizedDirection = direction ? direction.toUpperCase() : null;
 
     const VALID_STATUSES = ['matched','unmatched','ignored'];
     if (match_status && !VALID_STATUSES.includes(match_status))
@@ -560,14 +576,16 @@ router.patch('/reconciliation/rows/:id/classify', async (req, res, next) => {
         notes       = COALESCE($5, notes),
         match_status = COALESCE($6, match_status),
         matched_transaction_id = COALESCE($7, matched_transaction_id),
-        reason      = COALESCE($8, reason)
-      WHERE id=$9 RETURNING *
+        reason      = COALESCE($8, reason),
+        direction   = COALESCE($9, direction)
+      WHERE id=$10 RETURNING *
     `, [category_id||null, project_id||null, vendor_id||null, client_id||null,
         notes||null, match_status||null, matched_transaction_id||null,
-        req.body.reason||null, rowId]);
+        req.body.reason||null, normalizedDirection, rowId]);
 
     // C5+C6: Determine specific audit action + require reason for manual overrides
-    const auditAction = match_status === 'matched'   ? 'reconciliation_row_matched' :
+    const auditAction = direction                    ? 'reconciliation_row_direction_changed' :
+                        match_status === 'matched'   ? 'reconciliation_row_matched' :
                         match_status === 'ignored'   ? 'reconciliation_row_ignored' :
                         match_status === 'unmatched' ? 'reconciliation_row_unmatched' :
                         'reconciliation_row_reclassified';
@@ -576,10 +594,49 @@ router.patch('/reconciliation/rows/:id/classify', async (req, res, next) => {
       userId: req.user.id, action: auditAction,
       entityType: 'treasury_import_rows', entityId: String(rowId),
       companyId: existing.rows[0].company_id,
-      oldValues: { match_status: existing.rows[0].match_status },
-      newValues: { ...req.body, reason: req.body.reason || null },
+      oldValues: { match_status: existing.rows[0].match_status, direction: existing.rows[0].direction },
+      newValues: { ...req.body, direction: normalizedDirection, reason: req.body.reason || null },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
+
+    // Sync direction change to bank_transactions
+    if (normalizedDirection && normalizedDirection !== existing.rows[0].direction) {
+      try {
+        if (normalizedDirection === 'INFLOW') {
+          // Was OUTFLOW, now INFLOW — upsert deposit into bank_transactions
+          await query(`
+            INSERT INTO bank_transactions
+              (company_id, bank_account_id, transaction_date, amount,
+               transaction_type, reference, description,
+               customer_name, match_status, applied_invoice_id, created_at)
+            VALUES ($1,$2,$3,$4,'deposit',$5,$6,NULL,'unmatched',NULL,NOW())
+            ON CONFLICT (company_id, bank_account_id, transaction_date, amount, reference)
+            DO UPDATE SET transaction_type='deposit', match_status='unmatched'
+          `, [
+            existing.rows[0].company_id, existing.rows[0].bank_account_id,
+            existing.rows[0].transaction_date, existing.rows[0].amount,
+            existing.rows[0].bank_reference||null, existing.rows[0].bank_description||null
+          ]);
+        } else {
+          // Was INFLOW, now OUTFLOW — update bank_transactions to withdrawal
+          await query(`
+            INSERT INTO bank_transactions
+              (company_id, bank_account_id, transaction_date, amount,
+               transaction_type, reference, description,
+               customer_name, match_status, applied_invoice_id, created_at)
+            VALUES ($1,$2,$3,$4,'withdrawal',$5,$6,NULL,'unmatched',NULL,NOW())
+            ON CONFLICT (company_id, bank_account_id, transaction_date, amount, reference)
+            DO UPDATE SET transaction_type='withdrawal', match_status='unmatched'
+          `, [
+            existing.rows[0].company_id, existing.rows[0].bank_account_id,
+            existing.rows[0].transaction_date, existing.rows[0].amount,
+            existing.rows[0].bank_reference||null, existing.rows[0].bank_description||null
+          ]);
+        }
+      } catch(syncErr) {
+        // non-fatal
+      }
+    }
 
     // FIX 3: Sync status to bank_transactions (bidirectional)
     if (match_status && existing.rows[0].direction === 'INFLOW') {
