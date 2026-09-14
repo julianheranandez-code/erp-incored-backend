@@ -472,8 +472,98 @@ router.post('/imports/:id/process', async (req, res, next) => {
       }
     }
 
-    // Run matching engine
+    // Run existing matching engine
     const matched = await runMatchingEngine(batchId, batch.rows[0].company_id);
+
+    // Phase 2: Auto-match INFLOW rows against AR invoices
+    // Suggests matches by amount + reference — user must confirm via POST /ar/match-transaction
+    let autoSuggested = 0;
+    try {
+      const inflowToMatch = await query(`
+        SELECT r.id, r.amount, r.bank_reference, r.bank_description,
+               r.transaction_date, r.company_id, b.bank_account_id
+        FROM treasury_import_rows r
+        JOIN treasury_import_batches b ON b.id = r.batch_id
+        WHERE r.batch_id = $1
+          AND r.direction = 'INFLOW'
+          AND r.match_status = 'unmatched'
+      `, [batchId]);
+
+      for (const row of inflowToMatch.rows) {
+        // Strategy 1: Exact amount match on outstanding AR invoice
+        // Strategy 2: Reference contains folio
+        const candidates = await query(`
+          SELECT
+            i.id, i.folio, i.total_amount, i.outstanding_balance,
+            i.client_id, i.project_id, i.status,
+            c.name AS client_name,
+            CASE
+              WHEN i.outstanding_balance = $1 THEN 100
+              WHEN i.total_amount = $1 THEN 90
+              WHEN ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.01 THEN 80
+              ELSE 50
+            END +
+            CASE
+              WHEN $2 IS NOT NULL AND i.folio IS NOT NULL
+                AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%' THEN 20
+              ELSE 0
+            END AS confidence_score
+          FROM ar_invoices i
+          LEFT JOIN clients c ON c.id = i.client_id
+          WHERE i.company_id = $3
+            AND i.status NOT IN ('paid','cancelled','void')
+            AND i.outstanding_balance > 0
+            AND (
+              i.outstanding_balance = $1
+              OR i.total_amount = $1
+              OR ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.05
+              OR ($2 IS NOT NULL AND i.folio IS NOT NULL
+                  AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%')
+            )
+          ORDER BY confidence_score DESC
+          LIMIT 3
+        `, [row.amount, row.bank_reference || row.bank_description || null, row.company_id]);
+
+        if (candidates.rows.length > 0) {
+          // Store suggestion in treasury_import_rows notes (non-mutating)
+          const top = candidates.rows[0];
+          const suggestion = JSON.stringify({
+            auto_match_suggestions: candidates.rows.map(c => ({
+              ar_invoice_id: c.id,
+              folio: c.folio,
+              amount: c.total_amount,
+              outstanding: c.outstanding_balance,
+              client_name: c.client_name,
+              project_id: c.project_id,
+              confidence: c.confidence_score,
+              suggested_at: new Date().toISOString()
+            }))
+          });
+
+          await query(`
+            UPDATE treasury_import_rows
+            SET notes = COALESCE(notes || ' | ', '') || $1
+            WHERE id = $2
+          `, [`[AUTO_MATCH] ${suggestion}`, row.id]);
+
+          // Also update bank_transaction notes with suggestion
+          await query(`
+            UPDATE bank_transactions SET
+              notes = $1
+            WHERE company_id = $2
+              AND bank_account_id = $3
+              AND transaction_date = $4
+              AND amount = $5
+          `, [`AUTO_MATCH:${top.id}:${top.folio}:${top.confidence_score}`,
+              row.company_id, row.bank_account_id,
+              row.transaction_date, row.amount]);
+
+          autoSuggested++;
+        }
+      }
+    } catch(matchErr) {
+      logger.warn('[Treasury] Auto-match engine error:', matchErr.message);
+    }
 
     await query(`
       UPDATE treasury_import_batches
@@ -690,6 +780,77 @@ router.get('/reconciliation/summary', async (req, res, next) => {
     `, values);
 
     res.json({ success: true, data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// GET /api/treasury/reconciliation/suggestions/:row_id
+// Returns auto-match suggestions for a treasury import row
+router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.view')) return;
+  try {
+    const rowId = parseInt(req.params.row_id);
+    const row = await query(`
+      SELECT r.*, b.company_id, b.bank_account_id
+      FROM treasury_import_rows r
+      JOIN treasury_import_batches b ON b.id = r.batch_id
+      WHERE r.id = $1
+    `, [rowId]);
+
+    if (!row.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found' });
+
+    if (!await assertCompanyAccess(req, res, row.rows[0].company_id)) return;
+
+    const r = row.rows[0];
+
+    // Run live suggestion query
+    const candidates = await query(`
+      SELECT
+        i.id AS ar_invoice_id, i.folio, i.total_amount,
+        i.outstanding_balance, i.status, i.due_date,
+        i.client_id, i.project_id,
+        c.name AS client_name,
+        p.name AS project_name,
+        CASE
+          WHEN i.outstanding_balance = $1 THEN 100
+          WHEN i.total_amount = $1 THEN 90
+          WHEN ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.01 THEN 80
+          ELSE 50
+        END +
+        CASE
+          WHEN $2 IS NOT NULL AND i.folio IS NOT NULL
+            AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%' THEN 20
+          ELSE 0
+        END AS confidence_score
+      FROM ar_invoices i
+      LEFT JOIN clients c ON c.id = i.client_id
+      LEFT JOIN projects p ON p.id = i.project_id
+      WHERE i.company_id = $3
+        AND i.status NOT IN ('paid','cancelled','void')
+        AND i.outstanding_balance > 0
+        AND (
+          i.outstanding_balance = $1
+          OR i.total_amount = $1
+          OR ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.05
+          OR ($2 IS NOT NULL AND i.folio IS NOT NULL
+              AND LOWER($2) LIKE '%' || LOWER(i.folio) || '%')
+        )
+      ORDER BY confidence_score DESC
+      LIMIT 5
+    `, [r.amount, r.bank_reference || r.bank_description || null, r.company_id]);
+
+    res.json({
+      success: true,
+      row: {
+        id: r.id, amount: r.amount, direction: r.direction,
+        transaction_date: r.transaction_date,
+        bank_reference: r.bank_reference,
+        bank_description: r.bank_description,
+        match_status: r.match_status
+      },
+      suggestions: candidates.rows,
+      count: candidates.rows.length
+    });
   } catch (error) { next(error); }
 });
 
