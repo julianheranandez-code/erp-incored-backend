@@ -850,7 +850,10 @@ router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
       suggestions: candidates.rows,
       count: candidates.rows.length
     });
-  } catch (error) { next(error); }
+  } catch (error) {
+    logger.error('[suggestions] error:', error.message, error.stack);
+    next(error);
+  }
 });
 
 module.exports = router;
