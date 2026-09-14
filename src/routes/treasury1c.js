@@ -297,13 +297,16 @@ router.get('/imports', async (req, res, next) => {
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
     const result = await query(`
-      SELECT b.*, a.bank_name, a.account_name, a.currency,
+      SELECT
+        b.id, b.company_id, b.bank_account_id, b.file_name, b.file_type,
+        b.import_status, b.import_status AS status,
+        b.total_rows, b.imported_rows, b.failed_rows, b.error_message,
+        b.uploaded_at, b.uploaded_at AS created_at,
+        b.processed_at, b.duplicate_rows,
+        a.bank_name, a.account_name, a.currency,
         CONCAT(u.first_name,' ',u.last_name) AS uploaded_by_name,
-        b.uploaded_at AS created_at,
         CONCAT(u.first_name,' ',u.last_name) AS created_by_name,
-        b.processed_at,
-        CONCAT(pu.first_name,' ',pu.last_name) AS processed_by_name,
-        b.import_status AS status
+        CONCAT(u.first_name,' ',u.last_name) AS processed_by_name
       FROM treasury_import_batches b
       JOIN treasury_bank_accounts a ON a.id = b.bank_account_id
       LEFT JOIN users u ON u.id = b.uploaded_by
