@@ -963,13 +963,9 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
           (company_id, project_id, employee_id, description, amount,
            currency, expense_date, expense_type, internal_po_id,
            status, created_by, created_at)
-        SELECT
-          $1, $2, $3, $4, $5, a.currency, $6, $7, $8,
-          'payment_request_created', $9, NOW()
-        FROM internal_purchase_orders ipo
-        JOIN treasury_bank_accounts a ON a.company_id = $1
-        WHERE ipo.id = $8
-        LIMIT 1
+        VALUES ($1, $2, $3, $4, $5,
+          (SELECT currency FROM treasury_bank_accounts WHERE company_id=$1 LIMIT 1),
+          $6, $7, $8, 'payment_request_created', $9, NOW())
         RETURNING id, folio
       `, [
         row.company_id, po.project_id,
