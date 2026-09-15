@@ -384,14 +384,15 @@ router.post('/match-transaction', async (req, res, next) => {
         message: `Valid types: ${VALID_TYPES.join(', ')}` });
     }
 
+    const isInvoiceType = ['ar_invoice','ap_bill'].includes(document_type);
     await query(`
       UPDATE bank_transactions SET
         match_status          = 'matched',
         applied_document_id   = $1,
         applied_document_type = $2,
-        applied_invoice_id    = CASE WHEN $2 IN ('ar_invoice','ap_bill') THEN $1 ELSE applied_invoice_id END
+        applied_invoice_id    = CASE WHEN $4 THEN $1 ELSE applied_invoice_id END
       WHERE id = $3
-    `, [parseInt(document_id), document_type, parseInt(bank_transaction_id)]);
+    `, [parseInt(document_id), document_type, parseInt(bank_transaction_id), isInvoiceType]);
 
     writeAudit({
       userId: req.user.id, action: 'bank_transaction_matched',
