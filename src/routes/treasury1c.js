@@ -955,10 +955,9 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
         available: remaining });
 
     // Step 3: Atomic transaction — create expense + deduct PO + link bank_transaction
-    await query('BEGIN');
-    try {
+    await withTransaction(async (client) => {
       // 3a. Create expense
-      const expenseResult = await query(`
+      const expenseResult = await client.query(`
         INSERT INTO expenses
           (company_id, project_id, employee_id, description, amount,
            currency, expense_date, expense_type, internal_po_id,
@@ -979,7 +978,7 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
       const expenseId = expenseResult.rows[0].id;
 
       // 3b. Deduct from internal-po remaining_amount
-      await query(`
+      await client.query(`
         UPDATE internal_purchase_orders SET
           remaining_amount = remaining_amount - $1,
           updated_at = NOW()
@@ -987,7 +986,7 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
       `, [linkAmount, parseInt(internal_po_id)]);
 
       // 3c. Link bank_transaction to expense
-      await query(`
+      await client.query(`
         UPDATE bank_transactions SET
           match_status = 'matched',
           applied_document_id = $1,
@@ -1000,15 +999,13 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
           rowResult.rows[0].amount, rowResult.rows[0].amount]);
 
       // 3d. Mark treasury row as matched
-      await query(`
+      await client.query(`
         UPDATE treasury_import_rows SET
           match_status = 'matched',
           matched_transaction_id = $1,
           notes = COALESCE(notes,'') || ' | Linked to PO ' || $2 || ' expense ' || $3
         WHERE id = $4
       `, [expenseId, internal_po_id, expenseId, rowId]);
-
-      await query('COMMIT');
 
       writeAudit({
         userId: req.user.id, action: 'reconciliation_outflow_linked',
@@ -1031,10 +1028,7 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
         }
       });
 
-    } catch(txErr) {
-      await query('ROLLBACK');
-      throw txErr;
-    }
+    });
   } catch (error) { next(error); }
 });
 
