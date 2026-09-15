@@ -1005,7 +1005,7 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
           AND transaction_date = $4
           AND amount = $5
       `, [expenseId, row.company_id, row.bank_account_id,
-          rowResult.rows[0].amount, rowResult.rows[0].amount]);
+          rowResult.rows[0].transaction_date, rowResult.rows[0].amount]);
 
       // 3d. Mark treasury row as matched
       await client.query(`
