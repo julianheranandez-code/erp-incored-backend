@@ -403,7 +403,10 @@ router.post('/match-transaction', async (req, res, next) => {
 
     logger.info(`[TREASURY] txn=${bank_transaction_id} matched to ${document_type}=${document_id}`);
     res.json({ success: true, message: 'Transaction matched.' });
-  } catch (error) { next(error); }
+  } catch (error) {
+    console.error('[match-transaction] error:', error.message, error.stack);
+    next(error);
+  }
 });
 
 module.exports = router;
