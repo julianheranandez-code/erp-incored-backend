@@ -1011,10 +1011,9 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
       await client.query(`
         UPDATE treasury_import_rows SET
           match_status = 'matched',
-          matched_transaction_id = $1,
-          notes = COALESCE(notes,'') || ' | Linked to PO ' || $2 || ' expense ' || $3
-        WHERE id = $4
-      `, [expenseId, internal_po_id, expenseId, rowId]);
+          notes = COALESCE(notes,'') || ' | Linked to PO ' || $1 || ' expense ' || $2
+        WHERE id = $3
+      `, [internal_po_id, expenseId, rowId]);
 
       writeAudit({
         userId: req.user.id, action: 'reconciliation_outflow_linked',
