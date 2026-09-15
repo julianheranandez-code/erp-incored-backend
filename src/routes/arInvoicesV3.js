@@ -378,7 +378,7 @@ router.post('/match-transaction', async (req, res, next) => {
         message: 'Required: bank_transaction_id, document_id, document_type' });
     }
 
-    const VALID_TYPES = ['ar_invoice','ap_bill','payroll','journal_entry','treasury_transfer','tax_payment'];
+    const VALID_TYPES = ['ar_invoice','ap_bill','payroll','journal_entry','treasury_transfer','tax_payment','expense','reimbursement'];
     if (!VALID_TYPES.includes(document_type)) {
       return res.status(400).json({ success: false, error: 'invalid_document_type',
         message: `Valid types: ${VALID_TYPES.join(', ')}` });

@@ -810,33 +810,56 @@ router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
     const r = rowResult.rows[0];
 
     // Run live suggestion query
-    const candidates = await query(`
-      SELECT
-        i.id AS ar_invoice_id, i.folio, i.total_amount,
-        i.outstanding_balance, i.status, i.due_date,
-        i.client_id, i.project_id,
-        c.name AS client_name,
-        p.name AS project_name,
-        CASE
-          WHEN i.outstanding_balance = $1 THEN 100
-          WHEN i.total_amount = $1 THEN 90
-          WHEN ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.01 THEN 80
-          ELSE 50
-        END AS confidence_score
-      FROM ar_invoices i
-      LEFT JOIN clients c ON c.id = i.client_id
-      LEFT JOIN projects p ON p.id = i.project_id
-      WHERE i.company_id = $2
-        AND i.status NOT IN ('paid','cancelled','void')
-        AND i.outstanding_balance > 0
-        AND (
-          i.outstanding_balance = $1
-          OR i.total_amount = $1
-          OR ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.05
-        )
-      ORDER BY confidence_score DESC
-      LIMIT 5
-    `, [r.amount, r.company_id]);
+    let candidates;
+    if (r.direction === 'INFLOW') {
+      candidates = await query(`
+        SELECT
+          i.id AS document_id, 'ar_invoice' AS document_type,
+          i.folio AS reference, i.total_amount,
+          i.outstanding_balance AS balance_due,
+          i.status, i.due_date, i.client_id, i.project_id,
+          c.name AS party_name, p.name AS project_name,
+          CASE
+            WHEN i.outstanding_balance = $1 THEN 100
+            WHEN i.total_amount = $1 THEN 90
+            WHEN ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.01 THEN 80
+            ELSE 50
+          END AS confidence_score
+        FROM ar_invoices i
+        LEFT JOIN clients c ON c.id = i.client_id
+        LEFT JOIN projects p ON p.id = i.project_id
+        WHERE i.company_id = $2
+          AND i.status NOT IN ('paid','cancelled','void')
+          AND i.outstanding_balance > 0
+          AND (i.outstanding_balance = $1 OR i.total_amount = $1
+            OR ABS(i.outstanding_balance - $1) / NULLIF(i.outstanding_balance,0) < 0.05)
+        ORDER BY confidence_score DESC LIMIT 5
+      `, [r.amount, r.company_id]);
+    } else {
+      candidates = await query(`
+        SELECT
+          e.id AS document_id, 'expense' AS document_type,
+          e.folio AS reference, e.amount AS total_amount,
+          e.amount AS balance_due, e.status,
+          e.expense_date AS due_date, e.employee_id, e.project_id,
+          e.expense_type, e.internal_po_id,
+          CONCAT(emp.first_name,' ',COALESCE(emp.last_name_paternal, emp.last_name,'')) AS party_name,
+          p.name AS project_name,
+          CASE
+            WHEN e.amount = $1 THEN 100
+            WHEN ABS(e.amount - $1) / NULLIF(e.amount,0) < 0.01 THEN 80
+            WHEN ABS(e.amount - $1) / NULLIF(e.amount,0) < 0.05 THEN 60
+            ELSE 40
+          END AS confidence_score
+        FROM expenses e
+        LEFT JOIN employees emp ON emp.id = e.employee_id
+        LEFT JOIN projects p ON p.id = e.project_id
+        WHERE e.company_id = $2
+          AND e.status NOT IN ('cancelled','rejected','reimbursed')
+          AND (e.amount = $1 OR ABS(e.amount - $1) / NULLIF(e.amount,0) < 0.05)
+        ORDER BY confidence_score DESC, e.expense_date DESC LIMIT 5
+      `, [r.amount, r.company_id]);
+    }
 
     res.json({
       success: true,
@@ -848,12 +871,175 @@ router.get('/reconciliation/suggestions/:row_id', async (req, res, next) => {
         match_status: r.match_status
       },
       suggestions: candidates.rows,
+      suggestion_type: r.direction === 'INFLOW' ? 'ar_invoice' : 'expense',
       count: candidates.rows.length
     });
   } catch (error) {
     logger.error('[suggestions] error:', error.message, error.stack);
     next(error);
   }
+});
+
+// POST /api/treasury/reconciliation/rows/:id/link-to-po
+// Gap 3: Atomic OUTFLOW → expense creation + internal-po deduction + bank_transaction link
+// Permission: treasury.reconcile
+router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
+  if (!await assertTreasuryPermission(req, res, 'treasury.reconcile')) return;
+  try {
+    const rowId = parseInt(req.params.id);
+    const {
+      internal_po_id, amount, description,
+      expense_date, expense_type, employee_id
+    } = req.body;
+
+    if (!internal_po_id || !amount || !description || !expense_date || !expense_type)
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: internal_po_id, amount, description, expense_date, expense_type' });
+
+    const VALID_EXPENSE_TYPES = ['vendor_payment','reimbursement','operational'];
+    if (!VALID_EXPENSE_TYPES.includes(expense_type))
+      return res.status(400).json({ success: false, error: 'invalid_expense_type',
+        message: 'expense_type must be: vendor_payment | reimbursement | operational' });
+
+    if (expense_type === 'reimbursement' && !employee_id)
+      return res.status(400).json({ success: false, error: 'employee_required',
+        message: 'employee_id required for reimbursement expense type' });
+
+    // Step 1: Resolve treasury row + company
+    const rowResult = await query(`
+      SELECT r.id, r.amount, r.direction, r.match_status,
+             r.company_id, b.bank_account_id
+      FROM treasury_import_rows r
+      JOIN treasury_import_batches b ON b.id = r.batch_id
+      WHERE r.id = $1
+    `, [rowId]);
+
+    if (!rowResult.rows[0])
+      return res.status(404).json({ success: false, error: 'not_found', message: 'Row not found.' });
+
+    const row = rowResult.rows[0];
+
+    if (!await assertCompanyAccess(req, res, row.company_id)) return;
+
+    if (row.direction !== 'OUTFLOW')
+      return res.status(400).json({ success: false, error: 'invalid_direction',
+        message: 'link-to-po only valid for OUTFLOW rows.' });
+
+    if (row.match_status === 'matched')
+      return res.status(409).json({ success: false, error: 'already_matched',
+        message: 'Row is already matched.' });
+
+    const linkAmount = parseFloat(amount);
+
+    // Step 2: Validate internal-po available amount (server-side, FOR UPDATE lock)
+    const poResult = await query(`
+      SELECT id, status, total_amount, remaining_amount, project_id, company_id
+      FROM internal_purchase_orders
+      WHERE id = $1 AND company_id = $2
+      FOR UPDATE
+    `, [parseInt(internal_po_id), row.company_id]);
+
+    if (!poResult.rows[0])
+      return res.status(404).json({ success: false, error: 'po_not_found' });
+
+    const po = poResult.rows[0];
+
+    if (po.status !== 'approved')
+      return res.status(400).json({ success: false, error: 'po_not_approved',
+        message: `Internal PO status is ${po.status}. Must be approved.` });
+
+    const remaining = parseFloat(po.remaining_amount || po.total_amount);
+    if (linkAmount > remaining)
+      return res.status(409).json({ success: false, error: 'insufficient_po_balance',
+        message: `Amount ${linkAmount} exceeds available balance ${remaining}.`,
+        available: remaining });
+
+    // Step 3: Atomic transaction — create expense + deduct PO + link bank_transaction
+    await query('BEGIN');
+    try {
+      // 3a. Create expense
+      const expenseResult = await query(`
+        INSERT INTO expenses
+          (company_id, project_id, employee_id, description, amount,
+           currency, expense_date, expense_type, internal_po_id,
+           status, created_by, created_at)
+        SELECT
+          $1, $2, $3, $4, $5, a.currency, $6, $7, $8,
+          'payment_request_created', $9, NOW()
+        FROM internal_purchase_orders ipo
+        JOIN treasury_bank_accounts a ON a.company_id = $1
+        WHERE ipo.id = $8
+        LIMIT 1
+        RETURNING id, folio
+      `, [
+        row.company_id, po.project_id,
+        employee_id ? parseInt(employee_id) : null,
+        description, linkAmount,
+        expense_date, expense_type.toUpperCase(),
+        parseInt(internal_po_id), req.user.id
+      ]);
+
+      if (!expenseResult.rows[0]) throw new Error('Failed to create expense');
+      const expenseId = expenseResult.rows[0].id;
+
+      // 3b. Deduct from internal-po remaining_amount
+      await query(`
+        UPDATE internal_purchase_orders SET
+          remaining_amount = remaining_amount - $1,
+          updated_at = NOW()
+        WHERE id = $2
+      `, [linkAmount, parseInt(internal_po_id)]);
+
+      // 3c. Link bank_transaction to expense
+      await query(`
+        UPDATE bank_transactions SET
+          match_status = 'matched',
+          applied_document_id = $1,
+          applied_document_type = 'expense'
+        WHERE company_id = $2
+          AND bank_account_id = $3
+          AND transaction_date = $4
+          AND amount = $5
+      `, [expenseId, row.company_id, row.bank_account_id,
+          rowResult.rows[0].amount, rowResult.rows[0].amount]);
+
+      // 3d. Mark treasury row as matched
+      await query(`
+        UPDATE treasury_import_rows SET
+          match_status = 'matched',
+          matched_transaction_id = $1,
+          notes = COALESCE(notes,'') || ' | Linked to PO ' || $2 || ' expense ' || $3
+        WHERE id = $4
+      `, [expenseId, internal_po_id, expenseId, rowId]);
+
+      await query('COMMIT');
+
+      writeAudit({
+        userId: req.user.id, action: 'reconciliation_outflow_linked',
+        entityType: 'treasury_import_rows', entityId: String(rowId),
+        companyId: row.company_id,
+        newValues: { internal_po_id, expense_id: expenseId, amount: linkAmount, expense_type },
+        ip: req.ip, userAgent: req.get('user-agent')
+      }).catch(() => {});
+
+      res.status(201).json({
+        success: true,
+        message: 'OUTFLOW linked to internal PO and expense created.',
+        data: {
+          expense_id: expenseId,
+          internal_po_id: parseInt(internal_po_id),
+          amount_linked: linkAmount,
+          remaining_po_balance: remaining - linkAmount,
+          treasury_row_id: rowId,
+          match_status: 'matched'
+        }
+      });
+
+    } catch(txErr) {
+      await query('ROLLBACK');
+      throw txErr;
+    }
+  } catch (error) { next(error); }
 });
 
 module.exports = router;
