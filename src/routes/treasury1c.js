@@ -896,10 +896,19 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
       return res.status(400).json({ success: false, error: 'validation_error',
         message: 'Required: internal_po_id, amount, description, expense_date, expense_type' });
 
-    const VALID_EXPENSE_TYPES = ['vendor_payment','reimbursement','operational'];
-    if (!VALID_EXPENSE_TYPES.includes(expense_type))
+    // Map frontend expense_type to DB constraint values
+    const EXPENSE_TYPE_MAP = {
+      'vendor_payment':  'CORPORATE_CARD',
+      'reimbursement':   'REIMBURSEMENT',
+      'cash_advance':    'CASH_ADVANCE',
+      'REIMBURSEMENT':   'REIMBURSEMENT',
+      'CASH_ADVANCE':    'CASH_ADVANCE',
+      'CORPORATE_CARD':  'CORPORATE_CARD'
+    };
+    const mappedExpenseType = EXPENSE_TYPE_MAP[expense_type];
+    if (!mappedExpenseType)
       return res.status(400).json({ success: false, error: 'invalid_expense_type',
-        message: 'expense_type must be: vendor_payment | reimbursement | operational' });
+        message: 'expense_type must be: vendor_payment | reimbursement | cash_advance' });
 
     if (expense_type === 'reimbursement' && !employee_id)
       return res.status(400).json({ success: false, error: 'employee_required',
@@ -970,7 +979,7 @@ router.post('/reconciliation/rows/:id/link-to-po', async (req, res, next) => {
         row.company_id, po.project_id,
         employee_id ? parseInt(employee_id) : null,
         description, linkAmount,
-        expense_date, expense_type.toUpperCase(),
+        expense_date, mappedExpenseType,
         parseInt(internal_po_id), req.user.id
       ]);
 
