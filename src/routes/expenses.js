@@ -190,6 +190,76 @@ router.post('/', async (req, res, next) => {
     const seq = String(parseInt(countResult.rows[0].cnt) + 1).padStart(3,'0');
     const autoFolio = `EXP-${compCode}-${yymm}-${seq}`;
 
+    // V1: Validate project belongs to same company
+    if (project_id) {
+      const projCheck = await query(
+        'SELECT id, company_id FROM projects WHERE id=$1',
+        [parseInt(project_id)]
+      );
+      if (!projCheck.rows[0] || projCheck.rows[0].company_id !== parseInt(company_id))
+        return res.status(400).json({ success: false, error: 'invalid_project',
+          message: 'Project does not belong to this company.' });
+    }
+
+    // V2: Validate employee is active if provided
+    if (employee_id) {
+      const empCheck = await query(
+        'SELECT id, status FROM employees WHERE id=$1',
+        [parseInt(employee_id)]
+      );
+      if (!empCheck.rows[0])
+        return res.status(400).json({ success: false, error: 'invalid_employee',
+          message: 'Employee not found.' });
+      if (empCheck.rows[0].status !== 'active')
+        return res.status(400).json({ success: false, error: 'employee_not_active',
+          message: 'Employee is not active.' });
+    }
+
+    // V3: Validate fiscal period is open
+    if (expense_date) {
+      const periodCheck = await query(`
+        SELECT id, status FROM fiscal_periods
+        WHERE company_id = $1
+          AND start_date <= $2 AND end_date >= $2
+        LIMIT 1
+      `, [parseInt(company_id), expense_date]);
+      if (periodCheck.rows[0] && periodCheck.rows[0].status === 'closed')
+        return res.status(400).json({ success: false, error: 'period_closed',
+          message: 'The accounting period for this date is closed.' });
+    }
+
+    // V4: Validate tax_amount to 2 decimals
+    if (tax_amount !== undefined && tax_amount !== null) {
+      const taxRounded = Math.round(parseFloat(tax_amount) * 100) / 100;
+      if (Math.abs(taxRounded - parseFloat(tax_amount)) > 0.001)
+        return res.status(400).json({ success: false, error: 'invalid_tax_amount',
+          message: 'tax_amount must have at most 2 decimal places.' });
+    }
+
+    // V5: Check for duplicate expense (same employee + amount + date ±3 days + expense_type)
+    if (employee_id && amount && expense_date) {
+      const dupCheck = await query(`
+        SELECT id, folio FROM expenses
+        WHERE company_id = $1
+          AND employee_id = $2
+          AND amount = $3
+          AND expense_type = $4
+          AND expense_date BETWEEN ($5::date - INTERVAL '3 days') AND ($5::date + INTERVAL '3 days')
+          AND status NOT IN ('cancelled','rejected')
+        LIMIT 1
+      `, [parseInt(company_id), parseInt(employee_id), parseFloat(amount),
+          expense_type || 'REIMBURSEMENT', expense_date]);
+      if (dupCheck.rows[0])
+        return res.status(409).json({ success: false, error: 'duplicate_expense',
+          message: 'A similar expense already exists within 3 days.',
+          duplicate_id: dupCheck.rows[0].id,
+          duplicate_folio: dupCheck.rows[0].folio });
+    }
+
+    // V6: Attachment warning flag — comprobante required above $1,000 MXN
+    // (enforced at submit time, flagged here for frontend)
+    const requiresAttachment = parseFloat(amount) >= 1000;
+
     // Validate Internal PO balance if provided
     if (internal_po_id) {
       const poCheck = await query(
@@ -240,7 +310,9 @@ router.post('/', async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
-    res.status(201).json({ success: true, message: 'Expense created.', data: result.rows[0] });
+    res.status(201).json({ success: true, message: 'Expense created.',
+      data: result.rows[0],
+      warnings: requiresAttachment ? ['attachment_required_before_submit'] : [] });
   } catch(error) { next(error); }
 });
 
