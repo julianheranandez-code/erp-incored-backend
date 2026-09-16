@@ -218,12 +218,12 @@ router.post('/', async (req, res, next) => {
     // V3: Validate fiscal period is open
     if (expense_date) {
       const periodCheck = await query(`
-        SELECT id, status FROM fiscal_periods
+        SELECT id, is_closed FROM fiscal_periods
         WHERE company_id = $1
           AND start_date <= $2 AND end_date >= $2
         LIMIT 1
       `, [parseInt(company_id), expense_date]);
-      if (periodCheck.rows[0] && periodCheck.rows[0].status === 'closed')
+      if (periodCheck.rows[0] && periodCheck.rows[0].is_closed === true)
         return res.status(400).json({ success: false, error: 'period_closed',
           message: 'The accounting period for this date is closed.' });
     }
