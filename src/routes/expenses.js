@@ -414,6 +414,17 @@ router.post('/:id/reject', async (req, res, next) => {
       WHERE id=$2
     `, [reason, id]);
 
+    // Option B: Restore PO balance if expense was fully approved
+    if (existing.rows[0].internal_po_id &&
+        existing.rows[0].status === 'payment_request_created') {
+      await query(`
+        UPDATE internal_purchase_orders SET
+          remaining_amount = remaining_amount + $1,
+          updated_at = NOW()
+        WHERE id = $2
+      `, [parseFloat(existing.rows[0].amount), existing.rows[0].internal_po_id]);
+    }
+
     writeAudit({
       userId: req.user.id, action: 'expense_rejected',
       entityType: 'expenses', entityId: String(id),
@@ -484,6 +495,16 @@ router.post('/:id/cancel', async (req, res, next) => {
       UPDATE expenses SET status='cancelled', rejection_reason=$1, updated_at=NOW()
       WHERE id=$2
     `, [reason, id]);
+
+    // Option B: Restore PO balance if expense was fully approved
+    if (exp.internal_po_id && exp.status === 'payment_request_created') {
+      await query(`
+        UPDATE internal_purchase_orders SET
+          remaining_amount = remaining_amount + $1,
+          updated_at = NOW()
+        WHERE id = $2
+      `, [parseFloat(exp.amount), exp.internal_po_id]);
+    }
 
     // Sprint 5.2B.2: Emit REVERSAL event if OPERATING_EXPENSE exists
     onExpenseCancelled(expense, req.user.id).catch(e =>
@@ -563,6 +584,16 @@ router.post('/:id/approve-step', async (req, res, next) => {
             treasury_payment_request_id=$1,
             updated_at=NOW()
           WHERE id=$2`, [paymentRequestId, expId]);
+
+        // Option B: Deduct Internal PO remaining_amount when fully approved
+        if (exp.internal_po_id) {
+          await client.query(`
+            UPDATE internal_purchase_orders SET
+              remaining_amount = remaining_amount - $1,
+              updated_at = NOW()
+            WHERE id = $2 AND remaining_amount >= $1
+          `, [parseFloat(exp.amount), exp.internal_po_id]);
+        }
       } else {
         await client.query(`
           UPDATE treasury_approval_requests SET current_level=$1, updated_at=NOW()
