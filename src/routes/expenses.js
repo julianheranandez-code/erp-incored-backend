@@ -229,9 +229,10 @@ router.post('/', async (req, res, next) => {
     }
 
     // V4: Validate tax_amount to 2 decimals
-    if (tax_amount !== undefined && tax_amount !== null) {
-      const taxRounded = Math.round(parseFloat(tax_amount) * 100) / 100;
-      if (Math.abs(taxRounded - parseFloat(tax_amount)) > 0.001)
+    if (tax_amount !== undefined && tax_amount !== null && tax_amount !== 0) {
+      const taxStr = String(parseFloat(tax_amount));
+      const decimals = taxStr.includes('.') ? taxStr.split('.')[1].length : 0;
+      if (decimals > 2)
         return res.status(400).json({ success: false, error: 'invalid_tax_amount',
           message: 'tax_amount must have at most 2 decimal places.' });
     }
@@ -261,6 +262,7 @@ router.post('/', async (req, res, next) => {
     const requiresAttachment = parseFloat(amount) >= 1000;
 
     // Validate Internal PO balance if provided
+    // Note: requiresAttachment is returned in warnings array
     if (internal_po_id) {
       const poCheck = await query(
         'SELECT id, status, remaining_amount, total_amount FROM internal_purchase_orders WHERE id=$1 AND company_id=$2',
