@@ -152,6 +152,8 @@ const schemas = {
     end_date_planned: Joi.date().optional(),
     end_date_real: Joi.date().optional().allow(null),
     description: Joi.string().max(5000).optional().allow(''),
+    notes: Joi.string().max(5000).optional().allow(''),
+    project_type: Joi.string().valid('FTTH','Cableado Estructurado','FTTH Homepass','Mantenimiento','Soporte','Asesoría','Swap','HDD','Otro','ftth','structured_cabling','ftth_homepass','maintenance','support','consulting','swap','hdd','other').optional().allow('',null),
   }),
 
   // Tasks
