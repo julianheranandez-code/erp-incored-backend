@@ -51,11 +51,15 @@ class Project {
     const result = await query(
       `SELECT p.*, c.name AS client_name, c.rfc AS client_rfc,
               co.name AS company_name, co.short_code AS company_code,
-              CONCAT(u.first_name, ' ', u.last_name) AS pm_name, u.email AS pm_email
+              CONCAT(u.first_name, ' ', u.last_name) AS pm_name, u.email AS pm_email,
+              cpo.id AS client_po_id, cpo.po_number AS client_po_number,
+              cpo.total_amount AS client_po_amount, cpo.currency AS client_po_currency,
+              cpo.remaining_amount AS client_po_remaining
        FROM projects p
        LEFT JOIN clients c ON c.id = p.client_id
        LEFT JOIN companies co ON co.id = p.company_id
        LEFT JOIN users u ON u.id = p.pm_id
+       LEFT JOIN client_purchase_orders cpo ON cpo.project_id = p.id AND cpo.company_id = p.company_id
        WHERE p.id = $1`,
       [id]
     );
