@@ -401,46 +401,235 @@ router.post('/daily-reports', async (req, res, next) => {
       work_completed, planned_tomorrow, incidents,
       weather_impact = false, weather_notes,
       crew_count, productivity_rating,
-      materials_used, equipment_used, notes
+      materials_used, equipment_used, notes,
+      // v2 fields
+      crew, supervisor, activity_id, activity,
+      quantity_done, unit, productivity,
+      site_access, weather, allocation_ticket, municipal_permit,
+      stopper_category, stopper_severity, stopper, has_stopper = false,
+      affected_tasks, date
     } = req.body;
 
     if (!project_id || !company_id) {
-      return res.status(400).json({ success: false, error: 'validation_error', message: 'Required: project_id, company_id' });
+      return res.status(400).json({ success: false, error: 'validation_error',
+        message: 'Required: project_id, company_id' });
     }
+
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, company_id);
+    if (!authorizedCompanyId && req.user.role !== 'super_admin')
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const rDate = date || report_date || new Date().toISOString().split('T')[0];
+
+    // Auto-generate report_number: DR-{CO_ID}-{PR_ID}-{DATE}-{SEQ}
+    const counterResult = await query(`
+      INSERT INTO pmo_daily_report_counters (project_id, report_date, last_seq)
+      VALUES ($1, $2, 1)
+      ON CONFLICT (project_id, report_date)
+      DO UPDATE SET last_seq = pmo_daily_report_counters.last_seq + 1
+      RETURNING last_seq
+    `, [parseInt(project_id), rDate]);
+    const seq = counterResult.rows[0].last_seq;
+    const report_number = \`DR-\${company_id}-\${project_id}-\${rDate.replace(/-/g,'')}-\${String(seq).padStart(2,'0')}\`;
 
     const result = await query(`
       INSERT INTO project_daily_reports (
-        project_id, company_id, crew_id, report_date,
+        project_id, company_id, crew_id, report_date, date,
         work_completed, planned_tomorrow, incidents,
         weather_impact, weather_notes,
         crew_count, productivity_rating,
-        materials_used, equipment_used, notes, submitted_by
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-      ON CONFLICT (project_id, crew_id, report_date)
-      DO UPDATE SET
-        work_completed     = EXCLUDED.work_completed,
-        planned_tomorrow   = EXCLUDED.planned_tomorrow,
-        incidents          = EXCLUDED.incidents,
-        weather_impact     = EXCLUDED.weather_impact,
-        productivity_rating = EXCLUDED.productivity_rating,
-        notes              = EXCLUDED.notes,
-        updated_at         = NOW()
+        materials_used, equipment_used, notes, submitted_by, created_by,
+        report_number, crew, supervisor, activity_id, activity,
+        quantity_done, unit, productivity,
+        site_access, weather, allocation_ticket, municipal_permit,
+        stopper_category, stopper_severity, stopper, has_stopper, affected_tasks,
+        status
+      ) VALUES (
+        $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,
+        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'submitted'
+      )
       RETURNING *
     `, [
       parseInt(project_id), parseInt(company_id),
       crew_id ? parseInt(crew_id) : null,
-      report_date || new Date().toISOString().split('T')[0],
+      rDate,
       work_completed || null, planned_tomorrow || null,
       incidents || null, weather_impact, weather_notes || null,
       crew_count ? parseInt(crew_count) : null,
       productivity_rating ? parseInt(productivity_rating) : null,
-      materials_used ? JSON.stringify(materials_used) : null,
+      materials_used ? (typeof materials_used === 'string' ? materials_used : JSON.stringify(materials_used)) : null,
       equipment_used || null, notes || null,
+      req.user.id,
+      report_number,
+      crew || null, supervisor || null,
+      activity_id ? parseInt(activity_id) : null, activity || null,
+      quantity_done ? parseFloat(quantity_done) : null, unit || null,
+      productivity ? parseFloat(productivity) : null,
+      site_access || null, weather || null,
+      allocation_ticket || null, municipal_permit || null,
+      stopper_category || null, stopper_severity || null,
+      stopper || null, has_stopper,
+      affected_tasks || null
+    ]);
+
+    writeAudit({
+      userId: req.user.id, action: 'daily_report_created',
+      entityType: 'project_daily_reports', entityId: String(result.rows[0].id),
+      companyId: parseInt(company_id),
+      newValues: { report_number, project_id, date: rDate },
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    logger.info(\`[PMO] Daily report \${report_number} submitted in \${Date.now()-startTime}ms\`);
+    res.status(201).json({ success: true, message: 'Daily report submitted.',
+      data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// ─── DAILY REPORTS V2 ────────────────────────────────────────
+
+// GET /api/pmo/daily-reports/catalogs
+router.get('/daily-reports/catalogs', async (req, res, next) => {
+  try {
+    const result = await query(`
+      SELECT field, value, sort_order
+      FROM pmo_daily_report_catalogs
+      WHERE active = true
+      ORDER BY field, sort_order
+    `);
+    // Group by field
+    const catalogs = {};
+    for (const row of result.rows) {
+      if (!catalogs[row.field]) catalogs[row.field] = [];
+      catalogs[row.field].push({ value: row.value, sort_order: row.sort_order });
+    }
+    res.json({ success: true, data: catalogs });
+  } catch (error) { next(error); }
+});
+
+// GET /api/pmo/daily-reports/:id
+router.get('/daily-reports/:id', async (req, res, next) => {
+  try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const result = await query(`
+      SELECT r.*,
+        p.name AS project_name, p.code AS project_code_ref,
+        cr.crew_name,
+        CONCAT(u.first_name,' ',u.last_name) AS submitted_by_name,
+        CONCAT(cu.first_name,' ',cu.last_name) AS created_by_name
+      FROM project_daily_reports r
+      LEFT JOIN projects p ON p.id = r.project_id
+      LEFT JOIN project_crews cr ON cr.id = r.crew_id
+      LEFT JOIN users u ON u.id = r.submitted_by
+      LEFT JOIN users cu ON cu.id = r.created_by
+      WHERE r.id = $1 ${authorizedCompanyId ? 'AND r.company_id = $2' : ''}
+    `, authorizedCompanyId ? [parseInt(req.params.id), authorizedCompanyId] : [parseInt(req.params.id)]);
+
+    if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    // Get attachments
+    const attachments = await query(`
+      SELECT a.*, pd.file_url, pd.original_name, pd.mime_type AS doc_mime
+      FROM pmo_daily_report_attachments a
+      LEFT JOIN project_documents pd ON pd.id = a.project_document_id
+      WHERE a.daily_report_id = $1
+      ORDER BY a.created_at ASC
+    `, [parseInt(req.params.id)]);
+
+    res.json({ success: true, data: { ...result.rows[0], attachments: attachments.rows } });
+  } catch (error) { next(error); }
+});
+
+// PATCH /api/pmo/daily-reports/:id
+router.patch('/daily-reports/:id', async (req, res, next) => {
+  try {
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.query.company_id);
+    const id = parseInt(req.params.id);
+
+    const existing = await query(
+      'SELECT * FROM project_daily_reports WHERE id=$1', [id]
+    );
+    if (!existing.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+    if (authorizedCompanyId && existing.rows[0].company_id !== authorizedCompanyId)
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const allowed = [
+      'work_completed','planned_tomorrow','incidents','weather_impact','weather_notes',
+      'crew_count','productivity_rating','materials_used','equipment_used','notes',
+      'crew','supervisor','activity','quantity_done','unit','productivity',
+      'site_access','weather','allocation_ticket','municipal_permit',
+      'stopper_category','stopper_severity','stopper','has_stopper','affected_tasks',
+      'status','date'
+    ];
+
+    const fields = [];
+    const params = [];
+    let idx = 1;
+    for (const key of allowed) {
+      if (key in req.body) {
+        fields.push(`${key} = $${idx++}`);
+        params.push(req.body[key]);
+      }
+    }
+    if (!fields.length) return res.status(400).json({ success: false, error: 'no_fields' });
+
+    params.push(id);
+    const result = await query(
+      `UPDATE project_daily_reports SET ${fields.join(', ')}, updated_at=NOW() WHERE id=$${idx} RETURNING *`,
+      params
+    );
+
+    writeAudit({
+      userId: req.user.id, action: 'daily_report_updated',
+      entityType: 'project_daily_reports', entityId: String(id),
+      companyId: existing.rows[0].company_id,
+      newValues: req.body,
+      ip: req.ip, userAgent: req.get('user-agent')
+    }).catch(() => {});
+
+    res.json({ success: true, message: 'Daily report updated.', data: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// POST /api/pmo/daily-reports/:id/attachments
+router.post('/daily-reports/:id/attachments', async (req, res, next) => {
+  try {
+    const { project_document_id, tag, file_name, mime_type, size_bytes } = req.body;
+    const dailyReportId = parseInt(req.params.id);
+
+    const reportCheck = await query(
+      'SELECT id, company_id, project_id FROM project_daily_reports WHERE id=$1', [dailyReportId]
+    );
+    if (!reportCheck.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
+
+    const report = reportCheck.rows[0];
+    const authorizedCompanyId = getAuthorizedCompanyId(req.user, req.body.company_id);
+    if (authorizedCompanyId && report.company_id !== authorizedCompanyId)
+      return res.status(403).json({ success: false, error: 'forbidden' });
+
+    const VALID_TAGS = ['Reporte de site','Reporte de instalación','Site Survey',
+      'Orden de servicio','Plano modificado','Adecuación','Ingeniería',
+      'Protocolo de aceptación','Reporte de incidencia','Otro'];
+    if (tag && !VALID_TAGS.includes(tag))
+      return res.status(400).json({ success: false, error: 'invalid_tag',
+        message: `tag must be one of: ${VALID_TAGS.join(', ')}` });
+
+    const result = await query(`
+      INSERT INTO pmo_daily_report_attachments
+        (daily_report_id, project_document_id, company_id, project_id,
+         tag, file_name, mime_type, size_bytes, uploaded_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      RETURNING *
+    `, [
+      dailyReportId,
+      project_document_id ? parseInt(project_document_id) : null,
+      report.company_id, report.project_id,
+      tag || 'Otro', file_name || null, mime_type || null,
+      size_bytes ? parseInt(size_bytes) : null,
       req.user.id
     ]);
 
-    logger.info(`[PMO] Daily report submitted in ${Date.now()-startTime}ms`);
-    res.status(201).json({ success: true, message: 'Daily report submitted.', data: result.rows[0] });
+    res.status(201).json({ success: true, message: 'Attachment linked.', data: result.rows[0] });
   } catch (error) { next(error); }
 });
 
