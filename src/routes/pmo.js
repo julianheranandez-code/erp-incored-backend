@@ -445,31 +445,48 @@ router.post('/daily-reports', async (req, res, next) => {
         stopper_category, stopper_severity, stopper, has_stopper, affected_tasks,
         status
       ) VALUES (
-        $1,$2,$3,$4,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15,
-        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'submitted'
+        $1,$2,$3,$4,$5,
+        $6,$7,$8,$9,$10,
+        $11,$12,$13,$14,$15,$16,$16,
+        $17,$18,$19,$20,$21,
+        $22,$23,$24,$25,$26,$27,$28,
+        $29,$30,$31,$32,$33,'submitted'
       )
       RETURNING *
     `, [
-      parseInt(project_id), parseInt(company_id),
-      crew_id ? parseInt(crew_id) : null,
-      rDate,
-      work_completed || null, planned_tomorrow || null,
-      incidents || null, weather_impact, weather_notes || null,
-      crew_count ? parseInt(crew_count) : null,
-      productivity_rating ? parseInt(productivity_rating) : null,
-      materials_used ? (typeof materials_used === 'string' ? materials_used : JSON.stringify(materials_used)) : null,
-      equipment_used || null, notes || null,
-      req.user.id,
-      report_number,
-      crew || null, supervisor || null,
-      activity_id ? parseInt(activity_id) : null, activity || null,
-      quantity_done ? parseFloat(quantity_done) : null, unit || null,
-      productivity ? parseFloat(productivity) : null,
-      site_access || null, weather || null,
-      allocation_ticket || null, municipal_permit || null,
-      stopper_category || null, stopper_severity || null,
-      stopper || null, has_stopper,
-      affected_tasks || null
+      parseInt(project_id),          // $1
+      parseInt(company_id),          // $2
+      crew_id ? parseInt(crew_id) : null, // $3
+      rDate,                         // $4 report_date
+      rDate,                         // $5 date
+      work_completed || null,        // $6
+      planned_tomorrow || null,      // $7
+      incidents || null,             // $8
+      weather_impact,                // $9
+      weather_notes || null,         // $10
+      crew_count ? parseInt(crew_count) : null,           // $11
+      productivity_rating ? parseInt(productivity_rating) : null, // $12
+      materials_used ? (typeof materials_used === 'string' ? materials_used : JSON.stringify(materials_used)) : null, // $13
+      equipment_used || null,        // $14
+      notes || null,                 // $15
+      req.user.id,                   // $16 submitted_by + created_by
+      report_number,                 // $17
+      crew || null,                  // $18
+      supervisor || null,            // $19
+      activity_id ? parseInt(activity_id) : null, // $20
+      activity || null,              // $21
+      quantity_done ? parseFloat(quantity_done) : null, // $22
+      unit || null,                  // $23
+      productivity ? parseFloat(productivity) : null, // $24
+      site_access || null,           // $25
+      weather || null,               // $26
+      allocation_ticket || null,     // $27
+      municipal_permit || null,      // $28
+      stopper_category || null,      // $29
+      stopper_severity || null,      // $30
+      stopper || null,               // $31
+      has_stopper,                   // $32
+      affected_tasks || null         // $33
     ]);
 
     writeAudit({
