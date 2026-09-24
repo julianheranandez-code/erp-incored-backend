@@ -124,28 +124,65 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
 });
 
 // GET /api/projects/:projectId/documents/:docId/download
+// ?raw=1 → stream file directly from S3 (no CORS issues, max security)
+// default → return signed URL (legacy, for PDF direct open)
 router.get('/:docId/download', async (req, res, next) => {
   try {
+    const projectId = parseInt(req.query.project_id || req.params.projectId || 0);
     const result = await query(
-      'SELECT * FROM project_documents WHERE id=$1 AND project_id=$2',
-      [parseInt(req.params.docId), parseInt(req.query.project_id || req.params.projectId || 0)]
+      'SELECT pd.*, p.company_id FROM project_documents pd JOIN projects p ON p.id = pd.project_id WHERE pd.id=$1 AND pd.project_id=$2',
+      [parseInt(req.params.docId), projectId]
     );
     if (!result.rows[0]) return res.status(404).json({ success: false,
       error: { code: 'NOT_FOUND', message: 'Document not found' } });
 
-    const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+    const doc = result.rows[0];
+
+    // Company isolation check
+    const userCompanies = req.user.company_access || [req.user.company_id];
+    if (req.user.role !== 'super_admin' && !userCompanies.includes(doc.company_id)) {
+      return res.status(403).json({ success: false, error: 'forbidden' });
+    }
+
     const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
     const s3 = new S3Client({
       region: process.env.AWS_REGION || 'us-east-1',
       credentials: { accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY }
     });
+
+    // raw=1 → stream file directly (fixes CORS for Excel/non-PDF)
+    if (req.query.raw === '1') {
+      const s3Obj = await s3.send(new GetObjectCommand({
+        Bucket: doc.s3_bucket, Key: doc.s3_key
+      }));
+
+      const mimeType = doc.mime_type || doc.file_type || 'application/octet-stream';
+      const filename = encodeURIComponent(doc.original_name || doc.file_name || 'document');
+
+      res.setHeader('Content-Type', mimeType);
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      if (doc.file_size) res.setHeader('Content-Length', doc.file_size);
+
+      // Stream S3 body to response
+      const stream = s3Obj.Body;
+      stream.pipe(res);
+      stream.on('error', (err) => {
+        logger.error('[project-documents] S3 stream error:', err.message);
+        if (!res.headersSent) next(err);
+      });
+      return;
+    }
+
+    // default → signed URL (legacy)
+    const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
     const url = await getSignedUrl(s3,
-      new GetObjectCommand({ Bucket: result.rows[0].s3_bucket, Key: result.rows[0].s3_key }),
+      new GetObjectCommand({ Bucket: doc.s3_bucket, Key: doc.s3_key }),
       { expiresIn: 3600 }
     );
     return res.json({ success: true,
-      data: { url, expires_in: 3600, filename: result.rows[0].original_name },
+      data: { url, expires_in: 3600, filename: doc.original_name },
       metadata: { generated_at: new Date().toISOString() } });
   } catch(e) { next(e); }
 });
