@@ -488,7 +488,7 @@ router.post('/daily-reports', async (req, res, next) => {
 
 // ─── DAILY REPORTS V2 ────────────────────────────────────────
 
-// GET /api/pmo/daily-reports/catalogs
+// GET /api/pmo/daily-reports/catalogs — MUST be before /:id
 router.get('/daily-reports/catalogs', async (req, res, next) => {
   try {
     const result = await query(`
@@ -497,7 +497,6 @@ router.get('/daily-reports/catalogs', async (req, res, next) => {
       WHERE active = true
       ORDER BY field, sort_order
     `);
-    // Group by field
     const catalogs = {};
     for (const row of result.rows) {
       if (!catalogs[row.field]) catalogs[row.field] = [];
