@@ -378,7 +378,11 @@ router.get('/daily-reports', async (req, res, next) => {
       SELECT r.*,
         p.name AS project_name,
         cr.crew_name,
-        CONCAT(u.first_name,' ',u.last_name) AS submitted_by_name
+        CONCAT(u.first_name,' ',u.last_name) AS submitted_by_name,
+        COALESCE(r.items_count, 0) AS items_count,
+        (SELECT STRING_AGG(dri.activity, '; ' ORDER BY dri.line_no)
+         FROM pmo_daily_report_items dri
+         WHERE dri.daily_report_id = r.id) AS activities_summary
       FROM project_daily_reports r
       LEFT JOIN projects p     ON p.id = r.project_id
       LEFT JOIN project_crews cr ON cr.id = r.crew_id
@@ -392,7 +396,7 @@ router.get('/daily-reports', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-// POST /api/pmo/daily-reports
+// POST /api/pmo/daily-reports — v3 Maestro-Detalle
 router.post('/daily-reports', async (req, res, next) => {
   const startTime = Date.now();
   try {
@@ -402,12 +406,12 @@ router.post('/daily-reports', async (req, res, next) => {
       weather_impact = false, weather_notes,
       crew_count, productivity_rating,
       materials_used, equipment_used, notes,
-      // v2 fields
       crew, supervisor, activity_id, activity,
       quantity_done, unit, productivity,
       site_access, weather, allocation_ticket, municipal_permit,
       stopper_category, stopper_severity, stopper, has_stopper = false,
-      affected_tasks, date
+      affected_tasks, date,
+      items // v3: array of detail lines
     } = req.body;
 
     if (!project_id || !company_id) {
@@ -421,86 +425,180 @@ router.post('/daily-reports', async (req, res, next) => {
 
     const rDate = date || report_date || new Date().toISOString().split('T')[0];
 
-    // Auto-generate report_number: DR-{CO_ID}-{PR_ID}-{DATE}-{SEQ}
-    const counterResult = await query(`
-      INSERT INTO pmo_daily_report_counters (project_id, report_date, last_seq)
-      VALUES ($1, $2, 1)
-      ON CONFLICT (project_id, report_date)
-      DO UPDATE SET last_seq = pmo_daily_report_counters.last_seq + 1
-      RETURNING last_seq
-    `, [parseInt(project_id), rDate]);
+    // v3: Validate items[] before transaction
+    const itemsArray = Array.isArray(items) && items.length > 0 ? items : null;
+
+    if (itemsArray) {
+      // Check for duplicate activity_id in payload
+      const activityIds = itemsArray.map(i => parseInt(i.activity_id));
+      const uniqueIds = new Set(activityIds);
+      if (uniqueIds.size !== activityIds.length) {
+        const dupes = activityIds.filter((id, idx) => activityIds.indexOf(id) !== idx);
+        return res.status(422).json({ success: false, error: 'duplicate_activity',
+          message: 'La actividad ' + dupes[0] + ' ya está en otra línea del reporte.' });
+      }
+
+      // Validate each activity belongs to this project
+      for (const item of itemsArray) {
+        if (!item.activity_id) return res.status(422).json({ success: false,
+          error: 'missing_activity_id', message: 'Cada item requiere activity_id.' });
+        if (parseFloat(item.quantity_done) < 0) return res.status(422).json({
+          success: false, error: 'invalid_quantity',
+          message: 'quantity_done debe ser >= 0.' });
+      }
+    }
+
+    // Auto-generate report_number
+    const counterResult = await query(
+      'INSERT INTO pmo_daily_report_counters (project_id, report_date, last_seq) VALUES ($1, $2, 1) ON CONFLICT (project_id, report_date) DO UPDATE SET last_seq = pmo_daily_report_counters.last_seq + 1 RETURNING last_seq',
+      [parseInt(project_id), rDate]
+    );
     const seq = counterResult.rows[0].last_seq;
     const report_number = 'DR-' + company_id + '-' + project_id + '-' + rDate.replace(/-/g,'') + '-' + String(seq).padStart(2,'0');
 
-    const result = await query(`
-      INSERT INTO project_daily_reports (
-        project_id, company_id, crew_id, report_date, date,
-        work_completed, planned_tomorrow, incidents,
-        weather_impact, weather_notes,
-        crew_count, productivity_rating,
-        materials_used, equipment_used, notes, submitted_by, created_by,
-        report_number, crew, supervisor, activity_id, activity,
-        quantity_done, unit, productivity,
-        site_access, weather, allocation_ticket, municipal_permit,
-        stopper_category, stopper_severity, stopper, has_stopper, affected_tasks,
-        status
-      ) VALUES (
-        $1,$2,$3,$4,$5,
-        $6,$7,$8,$9,$10,
-        $11,$12,$13,$14,$15,$16,$16,
-        $17,$18,$19,$20,$21,
-        $22,$23,$24,$25,$26,$27,$28,
-        $29,$30,$31,$32,$33,'submitted'
-      )
-      RETURNING *
-    `, [
-      parseInt(project_id),          // $1
-      parseInt(company_id),          // $2
-      crew_id ? parseInt(crew_id) : null, // $3
-      rDate,                         // $4 report_date
-      rDate,                         // $5 date
-      work_completed || null,        // $6
-      planned_tomorrow || null,      // $7
-      incidents || null,             // $8
-      weather_impact,                // $9
-      weather_notes || null,         // $10
-      crew_count ? parseInt(crew_count) : null,           // $11
-      productivity_rating ? parseInt(productivity_rating) : null, // $12
-      materials_used ? (typeof materials_used === 'string' ? materials_used : JSON.stringify(materials_used)) : null, // $13
-      equipment_used || null,        // $14
-      notes || null,                 // $15
-      req.user.id,                   // $16 submitted_by + created_by
-      report_number,                 // $17
-      crew || null,                  // $18
-      supervisor || null,            // $19
-      activity_id ? parseInt(activity_id) : null, // $20
-      activity || null,              // $21
-      quantity_done ? parseFloat(quantity_done) : null, // $22
-      unit || null,                  // $23
-      productivity ? parseFloat(productivity) : null, // $24
-      site_access || null,           // $25
-      weather || null,               // $26
-      allocation_ticket || null,     // $27
-      municipal_permit || null,      // $28
-      stopper_category || null,      // $29
-      stopper_severity || null,      // $30
-      stopper || null,               // $31
-      has_stopper,                   // $32
-      affected_tasks || null         // $33
-    ]);
+    let reportRow;
+    let insertedItems = [];
+
+    await withTransaction(async (client) => {
+      // 1. Insert header
+      const headerResult = await client.query(`
+        INSERT INTO project_daily_reports (
+          project_id, company_id, crew_id, report_date, date,
+          work_completed, planned_tomorrow, incidents,
+          weather_impact, weather_notes,
+          crew_count, productivity_rating,
+          materials_used, equipment_used, notes, submitted_by, created_by,
+          report_number, crew, supervisor, activity_id, activity,
+          quantity_done, unit, productivity,
+          site_access, weather, allocation_ticket, municipal_permit,
+          stopper_category, stopper_severity, stopper, has_stopper, affected_tasks,
+          status, items_count
+        ) VALUES (
+          $1,$2,$3,$4,$5,
+          $6,$7,$8,$9,$10,
+          $11,$12,$13,$14,$15,$16,$16,
+          $17,$18,$19,$20,$21,
+          $22,$23,$24,$25,$26,$27,$28,
+          $29,$30,$31,$32,$33,'submitted',$34
+        )
+        RETURNING *
+      `, [
+        parseInt(project_id), parseInt(company_id),
+        crew_id ? parseInt(crew_id) : null,
+        rDate, rDate,
+        work_completed || null, planned_tomorrow || null,
+        incidents || null, weather_impact, weather_notes || null,
+        crew_count ? parseInt(crew_count) : null,
+        productivity_rating ? parseInt(productivity_rating) : null,
+        materials_used ? (typeof materials_used === 'string' ? materials_used : JSON.stringify(materials_used)) : null,
+        equipment_used || null, notes || null,
+        req.user.id,
+        report_number,
+        crew || null, supervisor || null,
+        activity_id ? parseInt(activity_id) : null, activity || null,
+        quantity_done ? parseFloat(quantity_done) : null, unit || null,
+        productivity ? parseFloat(productivity) : null,
+        site_access || null, weather || null,
+        allocation_ticket || null, municipal_permit || null,
+        stopper_category || null, stopper_severity || null,
+        stopper || null, has_stopper,
+        affected_tasks || null,
+        itemsArray ? itemsArray.length : (activity_id ? 1 : 0)
+      ]);
+
+      reportRow = headerResult.rows[0];
+      const reportId = reportRow.id;
+
+      // 2. Process items[]
+      const itemsToProcess = itemsArray ||
+        (activity_id ? [{ line_no: 1, activity_id, activity, quantity_done, unit, notes: null }] : []);
+
+      const productivities = [];
+
+      for (const item of itemsToProcess) {
+        // Fetch activity from WBS
+        const actResult = await client.query(
+          'SELECT id, name, quantity, unit FROM project_activities WHERE id=$1 AND project_id=$2',
+          [parseInt(item.activity_id), parseInt(project_id)]
+        );
+        if (!actResult.rows[0]) throw Object.assign(
+          new Error('Actividad ' + item.activity_id + ' no pertenece al proyecto.'),
+          { statusCode: 422, error: 'invalid_activity' }
+        );
+
+        const act = actResult.rows[0];
+        const itemUnit = item.unit || act.unit || null;
+        const itemQty = parseFloat(item.quantity_done) || 0;
+        const actQty = parseFloat(act.quantity) || 0;
+        const itemProd = actQty > 0 ? Math.round((itemQty / actQty) * 100 * 10) / 10 : null;
+        if (itemProd !== null) productivities.push(itemProd);
+
+        // Insert item
+        const itemResult = await client.query(`
+          INSERT INTO pmo_daily_report_items
+            (daily_report_id, company_id, project_id, line_no,
+             activity_id, parent_activity_id, activity,
+             quantity_done, unit, productivity, notes)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          RETURNING *
+        `, [
+          reportId, parseInt(company_id), parseInt(project_id),
+          item.line_no || 1,
+          parseInt(item.activity_id),
+          item.parent_activity_id ? parseInt(item.parent_activity_id) : null,
+          item.activity || act.name,
+          itemQty, itemUnit, itemProd,
+          item.notes || null
+        ]);
+        insertedItems.push(itemResult.rows[0]);
+
+        // Update WBS quantity_done accumulator
+        await client.query(`
+          UPDATE project_activities pa
+          SET quantity_done = (
+            SELECT COALESCE(SUM(dri.quantity_done), 0)
+            FROM pmo_daily_report_items dri
+            JOIN project_daily_reports dr ON dr.id = dri.daily_report_id
+            WHERE dri.activity_id = pa.id AND dr.deleted_at IS NULL
+          )
+          WHERE pa.id = $1
+        `, [parseInt(item.activity_id)]);
+
+        // Update WBS progress
+        await client.query(`
+          UPDATE project_activities
+          SET progress = LEAST(100, ROUND((quantity_done / NULLIF(quantity, 0)) * 100, 1))
+          WHERE id = $1 AND quantity > 0
+        `, [parseInt(item.activity_id)]);
+      }
+
+      // 3. Update header productivity = avg of items
+      if (productivities.length > 0) {
+        const avgProd = Math.round((productivities.reduce((a,b) => a+b, 0) / productivities.length) * 10) / 10;
+        await client.query(
+          'UPDATE project_daily_reports SET productivity=$1 WHERE id=$2',
+          [avgProd, reportId]
+        );
+        reportRow.productivity = avgProd;
+      }
+    });
 
     writeAudit({
       userId: req.user.id, action: 'daily_report_created',
-      entityType: 'project_daily_reports', entityId: String(result.rows[0].id),
+      entityType: 'project_daily_reports', entityId: String(reportRow.id),
       companyId: parseInt(company_id),
-      newValues: { report_number, project_id, date: rDate },
+      newValues: { report_number, project_id, date: rDate, items_count: insertedItems.length },
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
-    logger.info('[PMO] Daily report ' + report_number + ' submitted in ' + (Date.now()-startTime) + 'ms');
+    logger.info('[PMO] Daily report ' + report_number + ' created with ' + insertedItems.length + ' items in ' + (Date.now()-startTime) + 'ms');
     res.status(201).json({ success: true, message: 'Daily report submitted.',
-      data: result.rows[0] });
-  } catch (error) { next(error); }
+      data: { ...reportRow, items: insertedItems } });
+  } catch (error) {
+    if (error.statusCode) return res.status(error.statusCode).json({
+      success: false, error: error.error || 'validation_error', message: error.message });
+    next(error);
+  }
 });
 
 // ─── DAILY REPORTS V2 ────────────────────────────────────────
@@ -543,6 +641,27 @@ router.get('/daily-reports/:id', async (req, res, next) => {
 
     if (!result.rows[0]) return res.status(404).json({ success: false, error: 'not_found' });
 
+    // Get items[]
+    const itemsResult = await query(`
+      SELECT * FROM pmo_daily_report_items
+      WHERE daily_report_id = $1
+      ORDER BY line_no ASC
+    `, [parseInt(req.params.id)]);
+
+    // Retrocompat: if no items, generate virtual item from header
+    let items = itemsResult.rows;
+    if (items.length === 0 && result.rows[0].activity_id) {
+      items = [{
+        id: null, line_no: 1,
+        activity_id: result.rows[0].activity_id,
+        activity: result.rows[0].activity,
+        quantity_done: result.rows[0].quantity_done,
+        unit: result.rows[0].unit,
+        productivity: result.rows[0].productivity,
+        notes: null
+      }];
+    }
+
     // Get attachments
     const attachments = await query(`
       SELECT a.*, pd.original_name AS doc_original_name,
@@ -554,7 +673,7 @@ router.get('/daily-reports/:id', async (req, res, next) => {
       ORDER BY a.created_at ASC
     `, [parseInt(req.params.id)]);
 
-    res.json({ success: true, data: { ...result.rows[0], attachments: attachments.rows } });
+    res.json({ success: true, data: { ...result.rows[0], items, attachments: attachments.rows } });
   } catch (error) { next(error); }
 });
 
