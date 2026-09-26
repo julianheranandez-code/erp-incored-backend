@@ -545,7 +545,9 @@ router.get('/daily-reports/:id', async (req, res, next) => {
 
     // Get attachments
     const attachments = await query(`
-      SELECT a.*, pd.file_url, pd.original_name, pd.mime_type AS doc_mime
+      SELECT a.*, pd.original_name AS doc_original_name,
+             pd.s3_key, pd.s3_bucket, pd.mime_type AS doc_mime,
+             pd.file_size AS doc_file_size
       FROM pmo_daily_report_attachments a
       LEFT JOIN project_documents pd ON pd.id = a.project_document_id
       WHERE a.daily_report_id = $1
