@@ -430,7 +430,7 @@ router.post('/daily-reports', async (req, res, next) => {
       RETURNING last_seq
     `, [parseInt(project_id), rDate]);
     const seq = counterResult.rows[0].last_seq;
-    const report_number = \`DR-\${company_id}-\${project_id}-\${rDate.replace(/-/g,'')}-\${String(seq).padStart(2,'0')}\`;
+    const report_number = 'DR-' + company_id + '-' + project_id + '-' + rDate.replace(/-/g,'') + '-' + String(seq).padStart(2,'0');
 
     const result = await query(`
       INSERT INTO project_daily_reports (
@@ -497,7 +497,7 @@ router.post('/daily-reports', async (req, res, next) => {
       ip: req.ip, userAgent: req.get('user-agent')
     }).catch(() => {});
 
-    logger.info(\`[PMO] Daily report \${report_number} submitted in \${Date.now()-startTime}ms\`);
+    logger.info('[PMO] Daily report ' + report_number + ' submitted in ' + (Date.now()-startTime) + 'ms');
     res.status(201).json({ success: true, message: 'Daily report submitted.',
       data: result.rows[0] });
   } catch (error) { next(error); }
